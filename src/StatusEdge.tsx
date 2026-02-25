@@ -133,28 +133,27 @@ export default function StatusEdge({
     clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
 
     cutoutRects.forEach((rect) => {
-      const cutoutR = Math.min(rect.width, rect.height) / 2;
+      if (cutoutType === 'Dot') {
+        // Circular punch-hole camera.
+        // Android reports the bounding rect starting at y=0 when the camera sits
+        // inside the status bar, so the actual circle center is at the bottom of
+        // the rect: cy = rect.y + rect.height - r.
+        // For a truly floating circular cutout (rect.height ≈ rect.width) this
+        // formula still resolves to the correct center.
+        const r = rect.width / 2;
+        const cx = rect.x + r;
+        const cy = rect.y + rect.height - r;
+        const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
-      if (rect.y <= safeAreaTop * 0.5) {
-        // Top-attached: U-shape hugging exact cutout boundary
-        const leftX = rect.x;
-        const rightX = rect.x + rect.width;
-        const bottomY = rect.y + rect.height;
-        const arcCenterY = bottomY - cutoutR;
+        const orbitPath = Skia.Path.Make();
+        orbitPath.addOval(cameraOval);
+        glowPath!.addPath(orbitPath);
 
-        glowPath!.moveTo(leftX, 0);
-        glowPath!.lineTo(leftX, Math.max(0, arcCenterY));
-        const oval = Skia.XYWHRect(leftX, arcCenterY - cutoutR, rect.width, rect.width);
-        glowPath!.arcToOval(oval, 180, 180, false);
-        glowPath!.lineTo(rightX, 0);
-        glowPath!.lineTo(leftX, 0);
-        glowPath!.close();
-
-        // Exclude cutout interior from clip
-        clipPath!.addRect(Skia.XYWHRect(rect.x, 0, rect.width, bottomY));
+        // Clip: exclude the camera circle so glow radiates outward only
+        clipPath!.addOval(cameraOval);
       } else {
-        // Floating: closed pill/rounded-rect on exact boundary
-        const r = cutoutType === 'Island' ? rect.height / 2 : cutoutR;
+        // Island: pill-shaped cutout (floating, rounded rect)
+        const r = rect.height / 2;
         const orbitPath = Skia.Path.Make();
         orbitPath.addRRect(Skia.RRectXY(
           Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
@@ -162,7 +161,6 @@ export default function StatusEdge({
         ));
         glowPath!.addPath(orbitPath);
 
-        // Exclude cutout interior from clip
         clipPath!.addRRect(Skia.RRectXY(
           Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
           r, r
