@@ -35,7 +35,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         var type = "None"
         var safeAreaTopDp = 0f
 
-        val density = resources.displayMetrics.density
+        val density = reactApplicationContext.resources.displayMetrics.density
         val windowMetrics = activity.windowManager.currentWindowMetrics
         val screenWidthPx = windowMetrics.bounds.width()
 
