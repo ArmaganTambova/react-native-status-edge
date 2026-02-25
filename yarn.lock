@@ -10242,6 +10242,7 @@ __metadata:
     react-native: "*"
     react-native-gesture-handler: ">=2.0.0"
     react-native-reanimated: ">=3.0.0"
+    react-native-safe-area-context: ">=4.0.0"
   languageName: unknown
   linkType: soft
 
