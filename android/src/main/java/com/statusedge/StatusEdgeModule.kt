@@ -1,6 +1,7 @@
 package com.statusedge
 
 import android.os.Build
+import android.util.DisplayMetrics
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactMethod
@@ -19,7 +20,11 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   override fun getCutoutData(promise: Promise) {
     val activity = currentActivity
     if (activity == null) {
-      promise.resolve("{}")
+      val json = JSONObject()
+      json.put("cutoutType", "None")
+      json.put("cutoutRects", JSONArray())
+      json.put("safeAreaTop", 0)
+      promise.resolve(json.toString())
       return
     }
 
@@ -41,6 +46,18 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
               val rects = displayCutout.boundingRects
 
               if (rects.isNotEmpty()) {
+                val metrics = DisplayMetrics()
+                // Use defaultDisplay if available, otherwise fallback to resources
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    activity.display?.getRealMetrics(metrics)
+                } else {
+                    @Suppress("DEPRECATION")
+                    activity.windowManager.defaultDisplay.getRealMetrics(metrics)
+                }
+
+                val screenWidth = metrics.widthPixels
+
+                // Assume the main cutout is the first one
                 val mainRect = rects[0]
 
                 for (rect in rects) {
@@ -52,16 +69,29 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
                   rectsArray.put(rectObj)
                 }
 
-                if (mainRect.top <= 0) {
-                   type = "Notch"
+                val width = mainRect.width()
+                val isAttachedToTop = mainRect.top <= 0
+                val widthRatio = width.toDouble() / screenWidth.toDouble()
+
+                // Classification Logic
+                if (isAttachedToTop) {
+                    // Attached to top (Notch or Teardrop/Hole)
+                    // If wider than 35% of screen -> Notch
+                    if (widthRatio > 0.35) {
+                        type = "Notch"
+                    } else {
+                        // Narrow -> Dot (Teardrop, etc.)
+                        type = "Dot"
+                    }
                 } else {
-                   val width = mainRect.width()
-                   val height = mainRect.height()
-                   if (width.toDouble() > height.toDouble() * 1.5) {
-                     type = "Island"
-                   } else {
-                     type = "Dot"
-                   }
+                    // Detached (Floating)
+                    // If wider than 35% of screen -> Island (Dynamic Island style)
+                    if (widthRatio > 0.35) {
+                        type = "Island"
+                    } else {
+                        // Small/Narrow -> Dot (Punch hole)
+                        type = "Dot"
+                    }
                 }
               }
             }
