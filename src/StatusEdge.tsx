@@ -88,25 +88,55 @@ export default function StatusEdge({
   } else if (cutoutType === 'Island' || cutoutType === 'Dot') {
     if (cutoutRects && cutoutRects.length > 0) {
         cutoutRects.forEach((rect: any) => {
-             // Inflate rect to draw around the cutout
              const padding = 6;
-             const inflatedX = rect.x - padding;
-             const inflatedY = rect.y - padding;
              const inflatedW = rect.width + (padding * 2);
              const inflatedH = rect.height + (padding * 2);
 
-             // Use the smaller dimension for full rounded corners (pill/circle)
-             const r = Math.min(inflatedW, inflatedH) / 2;
+             // If attached to top edge (y <= 0), draw U shape
+             if (rect.y <= 0) {
+                 const x = rect.x - padding;
+                 // We want the U-shape to wrap around the bottom of the cutout.
+                 // rect.height is where the cutout ends. We want to be `padding` below that.
+                 const bottomY = rect.height + padding;
 
-             // Create a temporary path for this rect
-             const tempPath = Skia.Path.Make();
-             tempPath.addRRect(Skia.RRectXY(
-               Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
-               r, r
-             ));
+                 // Radius for the corners.
+                 const r = inflatedW / 2;
 
-             // Add it to the main path
-             path.addPath(tempPath);
+                 // Start top-left (off-screen or at edge)
+                 path.moveTo(x, 0);
+
+                 // Line down left side to start of curve
+                 // Ensure we don't go negative if bottomY is small (unlikely)
+                 path.lineTo(x, Math.max(0, bottomY - r));
+
+                 // Bottom curve (U-turn)
+                 // Use addArc instead of arcTo because Skia Path API varies
+                 // In @shopify/react-native-skia, Skia.Path.Make().addArc(oval, start, sweep)
+
+                 const oval = Skia.XYWHRect(x, bottomY - 2*r, 2*r, 2*r);
+                 path.addArc(oval, 180, -180);
+
+                 // Line up right side
+                 path.lineTo(x + inflatedW, 0);
+
+                 // Close loop across the top (off-screen) so the animation is continuous
+                 path.lineTo(x, 0);
+                 path.close();
+
+             } else {
+                 // Floating (fully detached)
+                 const inflatedX = rect.x - padding;
+                 const inflatedY = rect.y - padding;
+
+                 const r = Math.min(inflatedW, inflatedH) / 2;
+
+                 const tempPath = Skia.Path.Make();
+                 tempPath.addRRect(Skia.RRectXY(
+                   Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
+                   r, r
+                 ));
+                 path.addPath(tempPath);
+             }
         });
     }
   }
