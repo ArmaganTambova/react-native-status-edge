@@ -57,8 +57,6 @@ export default function StatusEdge({
   });
 
   if (!data) return null;
-  // If not loading, we can return null or render nothing.
-  // Returning null unmounts the Canvas which is fine.
   if (!isLoading) return null;
 
   const { cutoutType, cutoutRects } = data;
@@ -68,60 +66,47 @@ export default function StatusEdge({
     path.moveTo(0, strokeWidth / 2);
     path.lineTo(screenWidth, strokeWidth / 2);
   } else if (cutoutType === 'Notch') {
-    // For Notch, we usually follow the main cutout
     const rect = cutoutRects[0];
     if (rect) {
       const r = 10;
       const bottomY = rect.height; // Using rect height directly.
 
       path.moveTo(0, strokeWidth / 2);
-
-      // Ensure we don't draw past notch if r is too big, but simplified:
-      // If notch is at 0, rect.x is 0.
       path.lineTo(rect.x - r, strokeWidth / 2);
-
-      // Top-left corner of notch
       path.quadTo(rect.x, strokeWidth / 2, rect.x, strokeWidth / 2 + r);
-
-      // Down left side
       path.lineTo(rect.x, bottomY - r);
-
-      // Bottom-left corner
       path.quadTo(rect.x, bottomY, rect.x + r, bottomY);
-
-      // Bottom
       path.lineTo(rect.x + rect.width - r, bottomY);
-
-      // Bottom-right corner
       path.quadTo(rect.x + rect.width, bottomY, rect.x + rect.width, bottomY - r);
-
-      // Up right side
       path.lineTo(rect.x + rect.width, strokeWidth / 2 + r);
-
-      // Top-right corner
       path.quadTo(rect.x + rect.width, strokeWidth / 2, rect.x + rect.width + r, strokeWidth / 2);
-
       path.lineTo(screenWidth, strokeWidth / 2);
     } else {
-        // Fallback if no rect
         path.moveTo(0, strokeWidth / 2);
         path.lineTo(screenWidth, strokeWidth / 2);
     }
   } else if (cutoutType === 'Island' || cutoutType === 'Dot') {
-    // For Island/Dot, we might have multiple cutouts (e.g. pill + hole)
-    // We should draw around all of them.
     if (cutoutRects && cutoutRects.length > 0) {
         cutoutRects.forEach((rect: any) => {
-             // RRect
-             // Use smaller of width/height for radius to ensure it is fully rounded
-             // For a circle, width=height, r=height/2.
-             // For a pill, r=height/2.
-             const r = Math.min(rect.width, rect.height) / 2;
+             // Inflate rect to draw around the cutout
+             const padding = 6;
+             const inflatedX = rect.x - padding;
+             const inflatedY = rect.y - padding;
+             const inflatedW = rect.width + (padding * 2);
+             const inflatedH = rect.height + (padding * 2);
 
-             path.addRRect(Skia.RRectXY(
-               Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+             // Use the smaller dimension for full rounded corners (pill/circle)
+             const r = Math.min(inflatedW, inflatedH) / 2;
+
+             // Create a temporary path for this rect
+             const tempPath = Skia.Path.Make();
+             tempPath.addRRect(Skia.RRectXY(
+               Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
                r, r
              ));
+
+             // Add it to the main path
+             path.addPath(tempPath);
         });
     }
   }
