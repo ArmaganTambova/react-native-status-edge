@@ -75,15 +75,16 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
               // isAttachedToTop: 10px threshold handles rounding quirks across devices
               val isAttachedToTop = mainRect.top <= 10
 
-              // Classification by width ratio (most reliable physical signal):
-              //   Notch     — attached, very wide (>35% of screen)
-              //   WaterDrop — attached, medium (>8% of screen, classic teardrop notch)
-              //   Dot       — attached, small punch-hole (<8%)
-              //   Island    — floating, wide (>35%)
-              //   Dot       — floating, small punch-hole
+              // Classification by width ratio:
+              //   Notch     — attached, very wide  (>35%)
+              //   WaterDrop — attached, medium     (>15%, classic teardrop notch ~20-30%)
+              //   Dot       — attached, small      (<15%, punch-hole cameras ~5-10%
+              //               even when Android inflates the bounding rect slightly)
+              //   Island    — floating, wide       (>35%)
+              //   Dot       — floating, small
               type = when {
                 isAttachedToTop && widthRatio > 0.35 -> "Notch"
-                isAttachedToTop && widthRatio > 0.08 -> "WaterDrop"
+                isAttachedToTop && widthRatio > 0.15 -> "WaterDrop"
                 isAttachedToTop                       -> "Dot"
                 widthRatio > 0.35                     -> "Island"
                 else                                  -> "Dot"
