@@ -43,7 +43,18 @@ export default function StatusEdge({
       cancelAnimation(progress);
       progress.value = 0;
     }
-  }, [isLoading, length]);
+  }, [isLoading, length, totalDuration, progress]);
+
+  const start = useDerivedValue(() => {
+    // Clamp between 0 and 1
+    const val = progress.value - length;
+    return Math.max(0, Math.min(1, val));
+  });
+
+  const end = useDerivedValue(() => {
+    // Clamp between 0 and 1
+    return Math.min(1, Math.max(0, progress.value));
+  });
 
   if (!data) return null;
   // If not loading, we can return null or render nothing.
@@ -105,17 +116,6 @@ export default function StatusEdge({
        ));
     }
   }
-
-  const start = useDerivedValue(() => {
-    // Clamp between 0 and 1
-    const val = progress.value - length;
-    return Math.max(0, Math.min(1, val));
-  });
-
-  const end = useDerivedValue(() => {
-    // Clamp between 0 and 1
-    return Math.max(0, Math.min(1, progress.value));
-  });
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">

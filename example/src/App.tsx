@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { View, StyleSheet, Button, Text, SafeAreaView } from 'react-native';
+import { View, StyleSheet, Button, Text } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import StatusEdge, { useStatusEdge } from 'react-native-status-edge';
 
-export default function App() {
+function MainContent() {
   const [loading, setLoading] = useState(true);
   const [color, setColor] = useState('#00FF00');
   const data = useStatusEdge();
@@ -26,6 +27,14 @@ export default function App() {
         </View>
       </SafeAreaView>
     </View>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <MainContent />
+    </SafeAreaProvider>
   );
 }
 
