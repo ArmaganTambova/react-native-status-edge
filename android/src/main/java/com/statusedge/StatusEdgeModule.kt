@@ -28,32 +28,37 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       return
     }
 
+    // Restriction: Android 12+ (API 31+)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      val json = JSONObject()
+      json.put("cutoutType", "None") // Or throw error? User said "won't work", implies simply not functioning.
+      json.put("cutoutRects", JSONArray())
+      json.put("safeAreaTop", 0)
+      promise.resolve(json.toString())
+      return
+    }
+
     UiThreadUtil.runOnUiThread {
       val json = JSONObject()
       val rectsArray = JSONArray()
       var type = "None"
       var safeAreaTop = 0
 
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        val decorView = activity.window.decorView
-        val rootInsets = decorView.rootWindowInsets
+      // We are guaranteed API 31+ here due to the check above
+      val decorView = activity.window.decorView
+      val rootInsets = decorView.rootWindowInsets
 
-        if (rootInsets != null) {
-            val displayCutout = rootInsets.displayCutout
+      if (rootInsets != null) {
+          val displayCutout = rootInsets.displayCutout
 
-            if (displayCutout != null) {
+          if (displayCutout != null) {
               safeAreaTop = displayCutout.safeInsetTop
               val rects = displayCutout.boundingRects
 
               if (rects.isNotEmpty()) {
                 val metrics = DisplayMetrics()
-                // Use defaultDisplay if available, otherwise fallback to resources
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    activity.display?.getRealMetrics(metrics)
-                } else {
-                    @Suppress("DEPRECATION")
-                    activity.windowManager.defaultDisplay.getRealMetrics(metrics)
-                }
+                // API 31+ (S) guarantees windowManager.currentWindowMetrics or display.getRealMetrics availability
+                activity.display?.getRealMetrics(metrics)
 
                 val screenWidth = metrics.widthPixels
 
@@ -96,7 +101,6 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
               }
             }
         }
-      }
 
       json.put("cutoutType", type)
       json.put("cutoutRects", rectsArray)

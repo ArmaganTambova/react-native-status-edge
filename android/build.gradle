@@ -1,7 +1,7 @@
 buildscript {
   ext.StatusEdge = [
     kotlinVersion: "2.0.21",
-    minSdkVersion: 24,
+    minSdkVersion: 31,
     compileSdkVersion: 36,
     targetSdkVersion: 36
   ]

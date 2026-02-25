@@ -13,7 +13,20 @@ RCT_EXPORT_MODULE()
 
 - (void)getCutoutData:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *window = [UIApplication sharedApplication].keyWindow;
+        UIWindow *window = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive) {
+                    for (UIWindow *w in scene.windows) {
+                        if (w.isKeyWindow) {
+                            window = w;
+                            break;
+                        }
+                    }
+                }
+                if (window) break;
+            }
+        }
         if (!window) {
             window = [[UIApplication sharedApplication].windows firstObject];
         }
@@ -23,38 +36,55 @@ RCT_EXPORT_MODULE()
 
         NSString *type = @"None";
         NSMutableArray *rects = [NSMutableArray array];
-
-        // Simple heuristic based on model identifiers
-        if ([model hasPrefix:@"iPhone"]) {
-            NSArray *components = [model componentsSeparatedByString:@","];
-            if (components.count > 0) {
-                NSString *majorStr = [components[0] stringByReplacingOccurrencesOfString:@"iPhone" withString:@""];
-                NSInteger major = [majorStr integerValue];
-
-                // iPhone 15 series (15,4 / 15,5 / 16,1 / 16,2) -> Island (Major 15, 16)
-                // iPhone 14 Pro / Max (15,2 / 15,3) -> Island
-                // iPhone 14 / Plus (14,7 / 14,8) -> Notch
-
-                if (major >= 15) {
-                    type = @"Island";
-                } else if (major >= 10) { // X to 14
-                     // Check for SE
-                     // SE 2nd (12,8)
-                     // SE 3rd (14,6)
-                     if ([model isEqualToString:@"iPhone12,8"] || [model isEqualToString:@"iPhone14,6"]) {
-                         type = @"None";
-                     } else {
-                         type = @"Notch";
-                     }
-                }
-            }
-        }
-
-        // Dimensions
         CGFloat screenWidth = window.bounds.size.width;
 
+        // Logic: Support ONLY iPhone 11 and newer.
+        // iPhone 11 identifier starts with iPhone12,x (12,1 / 12,3 / 12,5)
+        // iPhone SE 2nd Gen is 12,8
+        // So major version must be >= 12.
+
+        if ([model hasPrefix:@"iPhone"]) {
+            NSArray *components = [model componentsSeparatedByString:@","];
+            NSString *majorStr = [components[0] stringByReplacingOccurrencesOfString:@"iPhone" withString:@""];
+            NSInteger major = [majorStr integerValue];
+
+            if (major < 12) {
+                // iPhone X, XS, XR, 8, etc. are not supported.
+                type = @"None";
+            } else {
+                // Major >= 12 (iPhone 11+)
+
+                // Check for SE models (Home button, no notch/island)
+                // iPhone SE 2nd Gen (12,8)
+                // iPhone SE 3rd Gen (14,6)
+                if ([model isEqualToString:@"iPhone12,8"] || [model isEqualToString:@"iPhone14,6"]) {
+                    type = @"None";
+                }
+                // Check for Dynamic Island
+                // iPhone 14 Pro (15,2), 14 Pro Max (15,3)
+                // iPhone 15 series (15,x), 16 series (16,x)
+                // Major >= 15 generally means Island.
+                else if (major >= 15) {
+                    type = @"Island";
+                }
+                // Major 12, 13, 14 (except SE) -> Notch
+                // iPhone 11 (12,x)
+                // iPhone 12 (13,x)
+                // iPhone 13 (14,x)
+                // iPhone 14/14 Plus (14,7 / 14,8)
+                else {
+                    type = @"Notch";
+                }
+            }
+        } else {
+            // Simulator, iPad, iPod -> None
+            type = @"None";
+        }
+
+        // Populate dimensions based on type
         if ([type isEqualToString:@"Island"]) {
-            // Dynamic Island is roughly 126x37 points
+            // Dynamic Island dimensions (approximate)
+            // Width expands, but base pill is ~126x37
             CGFloat width = 126;
             CGFloat height = 37;
             CGFloat x = (screenWidth - width) / 2;
@@ -67,11 +97,10 @@ RCT_EXPORT_MODULE()
                 @"height": @(height)
             }];
         } else if ([type isEqualToString:@"Notch"]) {
-            // Notch is roughly 209x30 points (iPhone X/11/12/13/14 standard)
-            // Height varies (30-34), safe area is usually 44-47.
-            // Let's use 30 as visual notch height, centered.
+            // Standard Notch dimensions
+            // Width ~209, Height ~30-34
             CGFloat width = 209;
-            CGFloat height = 30;
+            CGFloat height = 34; // Slightly taller than 30 for safety
             CGFloat x = (screenWidth - width) / 2;
             CGFloat y = 0; // Connected to top
 
@@ -97,6 +126,7 @@ RCT_EXPORT_MODULE()
     });
 }
 
+// TurboModule scaffolding
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params
 {
