@@ -68,13 +68,16 @@ export default function StatusEdge({
     path.moveTo(0, strokeWidth / 2);
     path.lineTo(screenWidth, strokeWidth / 2);
   } else if (cutoutType === 'Notch') {
+    // For Notch, we usually follow the main cutout
     const rect = cutoutRects[0];
     if (rect) {
       const r = 10;
       const bottomY = rect.height; // Using rect height directly.
 
       path.moveTo(0, strokeWidth / 2);
+
       // Ensure we don't draw past notch if r is too big, but simplified:
+      // If notch is at 0, rect.x is 0.
       path.lineTo(rect.x - r, strokeWidth / 2);
 
       // Top-left corner of notch
@@ -105,15 +108,21 @@ export default function StatusEdge({
         path.lineTo(screenWidth, strokeWidth / 2);
     }
   } else if (cutoutType === 'Island' || cutoutType === 'Dot') {
-    const rect = cutoutRects[0];
-    if (rect) {
-       // RRect
-       const r = rect.height / 2;
-       // We can just add RRect to path
-       path.addRRect(Skia.RRectXY(
-         Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
-         r, r
-       ));
+    // For Island/Dot, we might have multiple cutouts (e.g. pill + hole)
+    // We should draw around all of them.
+    if (cutoutRects && cutoutRects.length > 0) {
+        cutoutRects.forEach((rect: any) => {
+             // RRect
+             // Use smaller of width/height for radius to ensure it is fully rounded
+             // For a circle, width=height, r=height/2.
+             // For a pill, r=height/2.
+             const r = Math.min(rect.width, rect.height) / 2;
+
+             path.addRRect(Skia.RRectXY(
+               Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+               r, r
+             ));
+        });
     }
   }
 
