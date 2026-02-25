@@ -5,6 +5,7 @@ import {
   Path,
   Skia,
   BlurMask,
+  Group,
 } from '@shopify/react-native-skia';
 import {
   useSharedValue,
@@ -24,7 +25,7 @@ export default function StatusEdge({
   blurRadius = 8,
 }: StatusEdgeProps) {
   const data = useStatusEdge();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const progress = useSharedValue(0);
 
   // Comet length as a fraction of the total path length
@@ -58,7 +59,14 @@ export default function StatusEdge({
   if (!isLoading) return null;
 
   const { cutoutType, cutoutRects, safeAreaTop } = data;
+  const isDotOrIsland = cutoutType === 'Dot' || cutoutType === 'Island';
+
+  // Standard path for None / Notch / WaterDrop
   const path = Skia.Path.Make();
+  // Glow path + clip for Dot / Island
+  let glowPath: ReturnType<typeof Skia.Path.Make> | null = null;
+  let clipPath: ReturnType<typeof Skia.Path.Make> | null = null;
+  const GLOW_SPREAD = 18;
 
   if (cutoutType === 'None') {
     path.moveTo(0, strokeWidth / 2);
@@ -83,50 +91,31 @@ export default function StatusEdge({
       path.moveTo(0, strokeWidth / 2);
       path.lineTo(screenWidth, strokeWidth / 2);
     }
-  } else if (cutoutType === 'WaterDrop' || cutoutType === 'Dot' || cutoutType === 'Island') {
+  } else if (cutoutType === 'WaterDrop') {
     if (cutoutRects && cutoutRects.length > 0) {
       cutoutRects.forEach((rect) => {
         const padding = 6;
         const inflatedW = rect.width + padding * 2;
-        const inflatedH = rect.height + padding * 2;
 
-        // Top-attached cutout (punch-hole at top edge or waterdrop notch):
-        // Draw a U-shape from the left edge, around the bottom, to the right edge.
-        // The top segment (return path) sits at y=0 and is hidden by the screen edge.
-        //
-        // safeAreaTop threshold: anything with rect.y < half of safe area is "top-attached"
         if (rect.y <= safeAreaTop * 0.5) {
           const leftX = rect.x - padding;
           const rightX = rect.x + rect.width + padding;
-          // bottomY: the bottom of the inflated cutout bounding box (in dp)
           const bottomY = rect.y + rect.height + padding;
-          // arcRadius: half of the inflated width for a smooth semicircle at the bottom
           const arcRadius = inflatedW / 2;
-          // arcCenterY: center of the bottom semicircle
           const arcCenterY = bottomY - arcRadius;
 
           path.moveTo(leftX, 0);
-          // Left side: go down to where the arc begins
           path.lineTo(leftX, Math.max(0, arcCenterY));
-
-          // Bottom arc: arcToOval connects to the current path point (no new contour).
-          // Start at 180° (leftmost), sweep +180° clockwise → passes through the bottom
-          // → arrives at 0° (rightmost). This traces the bottom semicircle.
           const oval = Skia.XYWHRect(leftX, arcCenterY - arcRadius, inflatedW, inflatedW);
           path.arcToOval(oval, 180, 180, false);
-
-          // Right side: go up to screen top edge
           path.lineTo(rightX, 0);
-          // Return segment at y=0 (invisible, completes the closed loop for seamless animation)
           path.lineTo(leftX, 0);
           path.close();
         } else {
-          // Floating cutout (Island or floating Dot):
-          // Draw a closed pill/rounded-rect that orbits around it.
+          const inflatedH = rect.height + padding * 2;
           const inflatedX = rect.x - padding;
           const inflatedY = rect.y - padding;
           const r = Math.min(inflatedW, inflatedH) / 2;
-
           const tempPath = Skia.Path.Make();
           tempPath.addRRect(Skia.RRectXY(
             Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
@@ -136,34 +125,128 @@ export default function StatusEdge({
         }
       });
     }
+  } else if (isDotOrIsland && cutoutRects && cutoutRects.length > 0) {
+    // Dot / Island: orbit path sits exactly on the cutout boundary.
+    // A clip path (EvenOdd) masks the interior so glow only radiates outward.
+    glowPath = Skia.Path.Make();
+    clipPath = Skia.Path.Make();
+    clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
+
+    cutoutRects.forEach((rect) => {
+      const cutoutR = Math.min(rect.width, rect.height) / 2;
+
+      if (rect.y <= safeAreaTop * 0.5) {
+        // Top-attached: U-shape hugging exact cutout boundary
+        const leftX = rect.x;
+        const rightX = rect.x + rect.width;
+        const bottomY = rect.y + rect.height;
+        const arcCenterY = bottomY - cutoutR;
+
+        glowPath!.moveTo(leftX, 0);
+        glowPath!.lineTo(leftX, Math.max(0, arcCenterY));
+        const oval = Skia.XYWHRect(leftX, arcCenterY - cutoutR, rect.width, rect.width);
+        glowPath!.arcToOval(oval, 180, 180, false);
+        glowPath!.lineTo(rightX, 0);
+        glowPath!.lineTo(leftX, 0);
+        glowPath!.close();
+
+        // Exclude cutout interior from clip
+        clipPath!.addRect(Skia.XYWHRect(rect.x, 0, rect.width, bottomY));
+      } else {
+        // Floating: closed pill/rounded-rect on exact boundary
+        const r = cutoutType === 'Island' ? rect.height / 2 : cutoutR;
+        const orbitPath = Skia.Path.Make();
+        orbitPath.addRRect(Skia.RRectXY(
+          Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+          r, r
+        ));
+        glowPath!.addPath(orbitPath);
+
+        // Exclude cutout interior from clip
+        clipPath!.addRRect(Skia.RRectXY(
+          Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+          r, r
+        ));
+      }
+    });
+
+    // EvenOdd: outer screen rect XOR inner cutout shapes → only exterior visible
+    clipPath.setFillType(1);
   }
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-      {/* Glow Layer */}
-      <Path
-        path={path}
-        style="stroke"
-        strokeWidth={strokeWidth}
-        color={color}
-        start={start}
-        end={end}
-        strokeCap="round"
-      >
-        <BlurMask blur={blurRadius} style="normal" />
-      </Path>
+      {/* Standard rendering for None / Notch / WaterDrop */}
+      {!isDotOrIsland && (
+        <>
+          <Path
+            path={path}
+            style="stroke"
+            strokeWidth={strokeWidth}
+            color={color}
+            start={start}
+            end={end}
+            strokeCap="round"
+          >
+            <BlurMask blur={blurRadius} style="normal" />
+          </Path>
+          <Path
+            path={path}
+            style="stroke"
+            strokeWidth={strokeWidth / 2}
+            color={color}
+            start={start}
+            end={end}
+            strokeCap="round"
+            opacity={0.8}
+          />
+        </>
+      )}
 
-      {/* Core Layer */}
-      <Path
-        path={path}
-        style="stroke"
-        strokeWidth={strokeWidth / 2}
-        color={color}
-        start={start}
-        end={end}
-        strokeCap="round"
-        opacity={0.8}
-      />
+      {/* Dot / Island: multi-layer outward glow beam */}
+      {isDotOrIsland && glowPath && clipPath && (
+        <Group clip={clipPath}>
+          {/* Outer halo – widest, softest */}
+          <Path
+            path={glowPath}
+            style="stroke"
+            strokeWidth={GLOW_SPREAD}
+            color={color}
+            start={start}
+            end={end}
+            strokeCap="round"
+            opacity={0.2}
+          >
+            <BlurMask blur={GLOW_SPREAD} style="normal" />
+          </Path>
+          {/* Mid glow */}
+          <Path
+            path={glowPath}
+            style="stroke"
+            strokeWidth={GLOW_SPREAD * 0.6}
+            color={color}
+            start={start}
+            end={end}
+            strokeCap="round"
+            opacity={0.45}
+          >
+            <BlurMask blur={GLOW_SPREAD * 0.5} style="normal" />
+          </Path>
+          {/* Inner glow – brightest, closest to boundary */}
+          <Path
+            path={glowPath}
+            style="stroke"
+            strokeWidth={GLOW_SPREAD * 0.25}
+            color={color}
+            start={start}
+            end={end}
+            strokeCap="round"
+            opacity={0.7}
+          >
+            <BlurMask blur={GLOW_SPREAD * 0.25} style="normal" />
+          </Path>
+        </Group>
+      )}
     </Canvas>
   );
 }
