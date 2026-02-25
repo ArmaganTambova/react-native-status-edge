@@ -1,5 +1,7 @@
-import StatusEdge from './NativeStatusEdge';
+import { useStatusEdge } from './useStatusEdge';
+import StatusEdge from './StatusEdge';
+import type { StatusEdgeData, CutoutType, CutoutRect, StatusEdgeProps } from './types';
 
-export function multiply(a: number, b: number): number {
-  return StatusEdge.multiply(a, b);
-}
+export { useStatusEdge, StatusEdge };
+export type { StatusEdgeData, CutoutType, CutoutRect, StatusEdgeProps };
+export default StatusEdge;
