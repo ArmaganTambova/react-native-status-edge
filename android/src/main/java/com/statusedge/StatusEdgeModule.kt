@@ -70,20 +70,23 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
               }
 
               val widthPx = mainRect.width()
-              val heightPx = mainRect.height()
               val widthRatio = widthPx.toDouble() / screenWidthPx.toDouble()
-              // Aspect ratio to distinguish waterdrop (tall/narrow) from punch-hole (round)
-              val aspectRatio = if (widthPx > 0) heightPx.toDouble() / widthPx.toDouble() else 1.0
 
               // isAttachedToTop: 10px threshold handles rounding quirks across devices
               val isAttachedToTop = mainRect.top <= 10
 
+              // Classification by width ratio (most reliable physical signal):
+              //   Notch     — attached, very wide (>35% of screen)
+              //   WaterDrop — attached, medium (>8% of screen, classic teardrop notch)
+              //   Dot       — attached, small punch-hole (<8%)
+              //   Island    — floating, wide (>35%)
+              //   Dot       — floating, small punch-hole
               type = when {
                 isAttachedToTop && widthRatio > 0.35 -> "Notch"
-                isAttachedToTop && aspectRatio > 1.3  -> "WaterDrop"
-                isAttachedToTop                        -> "Dot"
-                widthRatio > 0.35                      -> "Island"
-                else                                   -> "Dot"
+                isAttachedToTop && widthRatio > 0.08 -> "WaterDrop"
+                isAttachedToTop                       -> "Dot"
+                widthRatio > 0.35                     -> "Island"
+                else                                  -> "Dot"
               }
             }
           }
