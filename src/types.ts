@@ -1,4 +1,4 @@
-export type CutoutType = 'Notch' | 'Dot' | 'Island' | 'None';
+export type CutoutType = 'Notch' | 'WaterDrop' | 'Dot' | 'Island' | 'None';
 
 export interface CutoutRect {
   x: number;

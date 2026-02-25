@@ -27,17 +27,17 @@ export default function StatusEdge({
   const { width: screenWidth } = useWindowDimensions();
   const progress = useSharedValue(0);
 
-  // Comet length
+  // Comet length as a fraction of the total path length
   const length = 0.3;
   const totalDuration = 2000;
 
   useEffect(() => {
     if (isLoading) {
-      // Animate from 0 to 1 + length so the tail disappears
+      // Animate from 0 to 1+length so the tail fully exits before reset
       progress.value = withRepeat(
         withTiming(1 + length, { duration: totalDuration, easing: Easing.linear }),
-        -1, // Infinite
-        false // Do not reverse
+        -1,
+        false
       );
     } else {
       cancelAnimation(progress);
@@ -46,20 +46,18 @@ export default function StatusEdge({
   }, [isLoading, length, totalDuration, progress]);
 
   const start = useDerivedValue(() => {
-    // Clamp between 0 and 1
     const val = progress.value - length;
     return Math.max(0, Math.min(1, val));
   });
 
   const end = useDerivedValue(() => {
-    // Clamp between 0 and 1
     return Math.min(1, Math.max(0, progress.value));
   });
 
   if (!data) return null;
   if (!isLoading) return null;
 
-  const { cutoutType, cutoutRects } = data;
+  const { cutoutType, cutoutRects, safeAreaTop } = data;
   const path = Skia.Path.Make();
 
   if (cutoutType === 'None') {
@@ -69,7 +67,7 @@ export default function StatusEdge({
     const rect = cutoutRects[0];
     if (rect) {
       const r = 10;
-      const bottomY = rect.height; // Using rect height directly.
+      const bottomY = rect.y + rect.height;
 
       path.moveTo(0, strokeWidth / 2);
       path.lineTo(rect.x - r, strokeWidth / 2);
@@ -82,91 +80,90 @@ export default function StatusEdge({
       path.quadTo(rect.x + rect.width, strokeWidth / 2, rect.x + rect.width + r, strokeWidth / 2);
       path.lineTo(screenWidth, strokeWidth / 2);
     } else {
-        path.moveTo(0, strokeWidth / 2);
-        path.lineTo(screenWidth, strokeWidth / 2);
+      path.moveTo(0, strokeWidth / 2);
+      path.lineTo(screenWidth, strokeWidth / 2);
     }
-  } else if (cutoutType === 'Island' || cutoutType === 'Dot') {
+  } else if (cutoutType === 'WaterDrop' || cutoutType === 'Dot' || cutoutType === 'Island') {
     if (cutoutRects && cutoutRects.length > 0) {
-        cutoutRects.forEach((rect: any) => {
-             const padding = 6;
-             const inflatedW = rect.width + (padding * 2);
-             const inflatedH = rect.height + (padding * 2);
+      cutoutRects.forEach((rect) => {
+        const padding = 6;
+        const inflatedW = rect.width + padding * 2;
+        const inflatedH = rect.height + padding * 2;
 
-             // If attached to top edge (y <= 0), draw U shape
-             if (rect.y <= 0) {
-                 const x = rect.x - padding;
-                 // We want the U-shape to wrap around the bottom of the cutout.
-                 // rect.height is where the cutout ends. We want to be `padding` below that.
-                 const bottomY = rect.height + padding;
+        // Top-attached cutout (punch-hole at top edge or waterdrop notch):
+        // Draw a U-shape from the left edge, around the bottom, to the right edge.
+        // The top segment (return path) sits at y=0 and is hidden by the screen edge.
+        //
+        // safeAreaTop threshold: anything with rect.y < half of safe area is "top-attached"
+        if (rect.y <= safeAreaTop * 0.5) {
+          const leftX = rect.x - padding;
+          const rightX = rect.x + rect.width + padding;
+          // bottomY: the bottom of the inflated cutout bounding box (in dp)
+          const bottomY = rect.y + rect.height + padding;
+          // arcRadius: half of the inflated width for a smooth semicircle at the bottom
+          const arcRadius = inflatedW / 2;
+          // arcCenterY: center of the bottom semicircle
+          const arcCenterY = bottomY - arcRadius;
 
-                 // Radius for the corners.
-                 const r = inflatedW / 2;
+          path.moveTo(leftX, 0);
+          // Left side: go down to where the arc begins
+          path.lineTo(leftX, Math.max(0, arcCenterY));
 
-                 // Start top-left (off-screen or at edge)
-                 path.moveTo(x, 0);
+          // Bottom arc: arcToOval connects to the current path point (no new contour).
+          // Start at 180° (leftmost), sweep +180° clockwise → passes through the bottom
+          // → arrives at 0° (rightmost). This traces the bottom semicircle.
+          const oval = Skia.XYWHRect(leftX, arcCenterY - arcRadius, inflatedW, inflatedW);
+          path.arcToOval(oval, 180, 180, false);
 
-                 // Line down left side to start of curve
-                 // Ensure we don't go negative if bottomY is small (unlikely)
-                 path.lineTo(x, Math.max(0, bottomY - r));
+          // Right side: go up to screen top edge
+          path.lineTo(rightX, 0);
+          // Return segment at y=0 (invisible, completes the closed loop for seamless animation)
+          path.lineTo(leftX, 0);
+          path.close();
+        } else {
+          // Floating cutout (Island or floating Dot):
+          // Draw a closed pill/rounded-rect that orbits around it.
+          const inflatedX = rect.x - padding;
+          const inflatedY = rect.y - padding;
+          const r = Math.min(inflatedW, inflatedH) / 2;
 
-                 // Bottom curve (U-turn)
-                 // Use addArc instead of arcTo because Skia Path API varies
-                 // In @shopify/react-native-skia, Skia.Path.Make().addArc(oval, start, sweep)
-
-                 const oval = Skia.XYWHRect(x, bottomY - 2*r, 2*r, 2*r);
-                 path.addArc(oval, 180, -180);
-
-                 // Line up right side
-                 path.lineTo(x + inflatedW, 0);
-
-                 // Close loop across the top (off-screen) so the animation is continuous
-                 path.lineTo(x, 0);
-                 path.close();
-
-             } else {
-                 // Floating (fully detached)
-                 const inflatedX = rect.x - padding;
-                 const inflatedY = rect.y - padding;
-
-                 const r = Math.min(inflatedW, inflatedH) / 2;
-
-                 const tempPath = Skia.Path.Make();
-                 tempPath.addRRect(Skia.RRectXY(
-                   Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
-                   r, r
-                 ));
-                 path.addPath(tempPath);
-             }
-        });
+          const tempPath = Skia.Path.Make();
+          tempPath.addRRect(Skia.RRectXY(
+            Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
+            r, r
+          ));
+          path.addPath(tempPath);
+        }
+      });
     }
   }
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-        {/* Glow Layer */}
-        <Path
-          path={path}
-          style="stroke"
-          strokeWidth={strokeWidth}
-          color={color}
-          start={start}
-          end={end}
-          strokeCap="round"
-        >
-           <BlurMask blur={blurRadius} style="normal" />
-        </Path>
+      {/* Glow Layer */}
+      <Path
+        path={path}
+        style="stroke"
+        strokeWidth={strokeWidth}
+        color={color}
+        start={start}
+        end={end}
+        strokeCap="round"
+      >
+        <BlurMask blur={blurRadius} style="normal" />
+      </Path>
 
-        {/* Core Layer */}
-        <Path
-          path={path}
-          style="stroke"
-          strokeWidth={strokeWidth / 2}
-          color={color}
-          start={start}
-          end={end}
-          strokeCap="round"
-          opacity={0.8}
-        />
+      {/* Core Layer */}
+      <Path
+        path={path}
+        style="stroke"
+        strokeWidth={strokeWidth / 2}
+        color={color}
+        start={start}
+        end={end}
+        strokeCap="round"
+        opacity={0.8}
+      />
     </Canvas>
   );
 }
