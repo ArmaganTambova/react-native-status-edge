@@ -158,15 +158,10 @@ export default function StatusEdge({
         // fits inside the bounding rect regardless of its aspect ratio.
         const r  = exact ? exact.r  : Math.min(rect.width, rect.height) / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
-        // Column-shaped cutoutRect (height > 1.5× width): the camera hole sits
-        // at the very TOP of the column, so anchor from the top (cy = rect.y + r).
-        // Normal tight rect (height ≈ width): bottom-align so the circle bottom
-        // sits flush with the rect bottom, which matches the physical hole.
-        const cy = exact
-          ? exact.cy
-          : rect.height > rect.width * 1.5
-            ? rect.y + r
-            : rect.y + rect.height - r;
+        // Always align to the vertical center of the reported cutout rect.
+        // This handles both tight bounding boxes (center is center) and
+        // safe-area columns (where the camera is typically centered within the reported area).
+        const cy = exact ? exact.cy : rect.y + rect.height / 2;
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
         mainPath.addOval(cameraOval);
