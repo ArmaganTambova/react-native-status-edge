@@ -96,10 +96,23 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
             // Derive exact camera circle from the cutout path shape.
             // getCutoutPath() (@hide, API 31+) returns the actual geometric path of
-            // the physical camera hole — computeBounds() gives the tight bounding rect.
+            // the physical camera hole.
             if (type == "Dot" || type == "Island") {
               val circle = extractCameraCircle(displayCutout, density)
-              if (circle != null) cameraCirclesArray.put(circle)
+              if (circle != null) {
+                cameraCirclesArray.put(circle)
+              } else {
+                // Fallback: If path API fails or returns nothing, derive circles from bounding rects mathematically.
+                // This ensures JS always receives valid cameraCircles data.
+                for (rect in rects) {
+                  val r = Math.min(rect.width(), rect.height()) / 2f
+                  val circleObj = JSONObject()
+                  circleObj.put("cx", (rect.exactCenterX() / density).toDouble())
+                  circleObj.put("cy", (rect.exactCenterY() / density).toDouble())
+                  circleObj.put("r", (r / density).toDouble())
+                  cameraCirclesArray.put(circleObj)
+                }
+              }
             }
           }
         }
@@ -140,17 +153,10 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      // Filter out paths that are clearly just safe-area columns (tall rectangles).
-      // On devices like Samsung S25 Ultra, getCutoutPath returns a path that
-      // matches the full status bar column (e.g. 50dp high), not the camera.
-      // A physical camera hole is roughly square (1:1 aspect ratio).
-      // We allow a small tolerance (up to 1.3:1) for oval cameras, but
-      // anything taller (like 1.5:1 or more) is likely a software "safe zone"
-      // and not the physical hole geometry we want.
-      // In these cases, we return null so the JS side can apply its own
-      // positioning logic (e.g. alignment heuristics) on the bounding rect.
-      if (bounds.height() > bounds.width() * 1.3f) return null
-
+      // Even if the path is a tall "safe area" column (common on Samsung),
+      // we do not discard it. We derive the camera circle mathematically
+      // by using the width (usually accurate) as the diameter and centering
+      // the circle within the bounds.
       val r  = Math.min(bounds.width(), bounds.height()) / 2f
       val obj = JSONObject()
       obj.put("cx", (bounds.centerX() / density).toDouble())
