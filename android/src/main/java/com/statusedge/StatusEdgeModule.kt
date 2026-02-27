@@ -140,10 +140,24 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
+      val r  = bounds.width() / 2f
+      val cx = bounds.centerX()
+      // Some OEMs (e.g. Samsung) return the entire status-bar safe-area column
+      // from getCutoutPath() rather than just the physical camera hole.
+      // In that case the bounding rect is portrait-oriented (height > 1.5 × width)
+      // and computeBounds().centerY() lands at the column mid-point — above the
+      // actual camera.  The camera hole sits at the BOTTOM of the column, tangent
+      // to the safe-area boundary, so its centre is at (bottom − r).
+      val cy = if (bounds.height() > bounds.width() * 1.5f) {
+        bounds.bottom - r
+      } else {
+        bounds.centerY()
+      }
+
       val obj = JSONObject()
-      obj.put("cx", (bounds.centerX() / density).toDouble())
-      obj.put("cy", (bounds.centerY() / density).toDouble())
-      obj.put("r",  (bounds.width()   / 2f / density).toDouble())
+      obj.put("cx", (cx / density).toDouble())
+      obj.put("cy", (cy / density).toDouble())
+      obj.put("r",  (r  / density).toDouble())
       obj
     } catch (_: Exception) {
       null
