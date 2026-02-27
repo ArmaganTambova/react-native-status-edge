@@ -115,6 +115,7 @@ RCT_EXPORT_MODULE()
         NSDictionary *result = @{
             @"cutoutType": type,
             @"cutoutRects": rects,
+            @"cameraCircles": @[],
             @"safeAreaTop": @(safeTop)
         };
 
