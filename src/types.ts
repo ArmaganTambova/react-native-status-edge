@@ -33,5 +33,4 @@ export interface StatusEdgeProps {
   isLoading?: boolean;
   color?: string;
   strokeWidth?: number;
-  blurRadius?: number;
 }

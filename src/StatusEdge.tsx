@@ -18,11 +18,12 @@ import {
 import { useStatusEdge } from './useStatusEdge';
 import type { StatusEdgeProps } from './types';
 
+const GLOW_SPREAD = 18;
+
 export default function StatusEdge({
   isLoading = false,
   color = '#00FF00',
   strokeWidth = 3,
-  blurRadius = 8,
 }: StatusEdgeProps) {
   const data = useStatusEdge();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -59,76 +60,89 @@ export default function StatusEdge({
   if (!isLoading) return null;
 
   const { cutoutType, cutoutRects, safeAreaTop } = data;
-  const isDotOrIsland = cutoutType === 'Dot' || cutoutType === 'Island';
 
-  // Standard path for None / Notch / WaterDrop
-  const path = Skia.Path.Make();
-  // Glow path + clip for Dot / Island
-  let glowPath: ReturnType<typeof Skia.Path.Make> | null = null;
+  // mainPath: the comet travel path for all cutout types
+  const mainPath = Skia.Path.Make();
+  // clipPath: EvenOdd mask to prevent glow from bleeding into the cutout interior.
+  // null for None (no cutout — canvas edge handles clipping naturally).
   let clipPath: ReturnType<typeof Skia.Path.Make> | null = null;
-  const GLOW_SPREAD = 18;
 
   if (cutoutType === 'None') {
-    path.moveTo(0, strokeWidth / 2);
-    path.lineTo(screenWidth, strokeWidth / 2);
+    // Simple horizontal sweep across the top of the screen
+    mainPath.moveTo(0, strokeWidth / 2);
+    mainPath.lineTo(screenWidth, strokeWidth / 2);
+
   } else if (cutoutType === 'Notch') {
     const rect = cutoutRects[0];
     if (rect) {
       const r = 10;
       const bottomY = rect.y + rect.height;
 
-      path.moveTo(0, strokeWidth / 2);
-      path.lineTo(rect.x - r, strokeWidth / 2);
-      path.quadTo(rect.x, strokeWidth / 2, rect.x, strokeWidth / 2 + r);
-      path.lineTo(rect.x, bottomY - r);
-      path.quadTo(rect.x, bottomY, rect.x + r, bottomY);
-      path.lineTo(rect.x + rect.width - r, bottomY);
-      path.quadTo(rect.x + rect.width, bottomY, rect.x + rect.width, bottomY - r);
-      path.lineTo(rect.x + rect.width, strokeWidth / 2 + r);
-      path.quadTo(rect.x + rect.width, strokeWidth / 2, rect.x + rect.width + r, strokeWidth / 2);
-      path.lineTo(screenWidth, strokeWidth / 2);
+      // Travel from left edge, dip around the notch, continue to right edge
+      mainPath.moveTo(0, strokeWidth / 2);
+      mainPath.lineTo(rect.x - r, strokeWidth / 2);
+      mainPath.quadTo(rect.x, strokeWidth / 2, rect.x, strokeWidth / 2 + r);
+      mainPath.lineTo(rect.x, bottomY - r);
+      mainPath.quadTo(rect.x, bottomY, rect.x + r, bottomY);
+      mainPath.lineTo(rect.x + rect.width - r, bottomY);
+      mainPath.quadTo(rect.x + rect.width, bottomY, rect.x + rect.width, bottomY - r);
+      mainPath.lineTo(rect.x + rect.width, strokeWidth / 2 + r);
+      mainPath.quadTo(rect.x + rect.width, strokeWidth / 2, rect.x + rect.width + r, strokeWidth / 2);
+      mainPath.lineTo(screenWidth, strokeWidth / 2);
+
+      // EvenOdd clip: screen rect XOR notch rect → glow only radiates outward
+      clipPath = Skia.Path.Make();
+      clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
+      clipPath.addRect(Skia.XYWHRect(rect.x, 0, rect.width, rect.y + rect.height));
+      clipPath.setFillType(1);
     } else {
-      path.moveTo(0, strokeWidth / 2);
-      path.lineTo(screenWidth, strokeWidth / 2);
+      mainPath.moveTo(0, strokeWidth / 2);
+      mainPath.lineTo(screenWidth, strokeWidth / 2);
     }
+
   } else if (cutoutType === 'WaterDrop') {
-    if (cutoutRects && cutoutRects.length > 0) {
-      cutoutRects.forEach((rect) => {
-        const padding = 6;
-        const inflatedW = rect.width + padding * 2;
+    const rect = cutoutRects[0];
+    if (rect && rect.y <= safeAreaTop * 0.5) {
+      // Waterdrop attached to the top edge:
+      // Travel from left → down the left side → around the semicircular bottom → up the right side → right edge
+      const padding = 6;
+      const inflatedW = rect.width + padding * 2;
+      const leftX = rect.x - padding;
+      const rightX = rect.x + rect.width + padding;
+      const bottomY = rect.y + rect.height + padding;
+      const arcRadius = inflatedW / 2;
+      const arcCenterY = bottomY - arcRadius;
+      const oval = Skia.XYWHRect(leftX, arcCenterY - arcRadius, inflatedW, inflatedW);
 
-        if (rect.y <= safeAreaTop * 0.5) {
-          const leftX = rect.x - padding;
-          const rightX = rect.x + rect.width + padding;
-          const bottomY = rect.y + rect.height + padding;
-          const arcRadius = inflatedW / 2;
-          const arcCenterY = bottomY - arcRadius;
+      mainPath.moveTo(0, strokeWidth / 2);
+      mainPath.lineTo(leftX, strokeWidth / 2);
+      mainPath.lineTo(leftX, Math.max(strokeWidth / 2, arcCenterY));
+      // Arc from left (180°) sweeping 180° clockwise → arrives at right (0°)
+      mainPath.arcToOval(oval, 180, 180, false);
+      mainPath.lineTo(rightX, strokeWidth / 2);
+      mainPath.lineTo(screenWidth, strokeWidth / 2);
 
-          path.moveTo(leftX, 0);
-          path.lineTo(leftX, Math.max(0, arcCenterY));
-          const oval = Skia.XYWHRect(leftX, arcCenterY - arcRadius, inflatedW, inflatedW);
-          path.arcToOval(oval, 180, 180, false);
-          path.lineTo(rightX, 0);
-          path.lineTo(leftX, 0);
-          path.close();
-        } else {
-          const inflatedH = rect.height + padding * 2;
-          const inflatedX = rect.x - padding;
-          const inflatedY = rect.y - padding;
-          const r = Math.min(inflatedW, inflatedH) / 2;
-          const tempPath = Skia.Path.Make();
-          tempPath.addRRect(Skia.RRectXY(
-            Skia.XYWHRect(inflatedX, inflatedY, inflatedW, inflatedH),
-            r, r
-          ));
-          path.addPath(tempPath);
-        }
-      });
+      // EvenOdd clip: screen rect XOR waterdrop interior → glow only radiates outward
+      const dropInterior = Skia.Path.Make();
+      dropInterior.moveTo(leftX, 0);
+      dropInterior.lineTo(leftX, arcCenterY);
+      dropInterior.arcToOval(oval, 180, 180, false);
+      dropInterior.lineTo(rightX, 0);
+      dropInterior.close();
+
+      clipPath = Skia.Path.Make();
+      clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
+      clipPath.addPath(dropInterior);
+      clipPath.setFillType(1);
+    } else {
+      // Non-top waterdrop or no rect — fall back to simple horizontal sweep
+      mainPath.moveTo(0, strokeWidth / 2);
+      mainPath.lineTo(screenWidth, strokeWidth / 2);
     }
-  } else if (isDotOrIsland && cutoutRects && cutoutRects.length > 0) {
+
+  } else if (cutoutType === 'Dot' || cutoutType === 'Island') {
     // Dot / Island: orbit path sits exactly on the cutout boundary.
-    // A clip path (EvenOdd) masks the interior so glow only radiates outward.
-    glowPath = Skia.Path.Make();
+    // Clip path (EvenOdd) ensures glow radiates outward only.
     clipPath = Skia.Path.Make();
     clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
 
@@ -136,30 +150,22 @@ export default function StatusEdge({
 
     cutoutRects.forEach((rect, idx) => {
       if (cutoutType === 'Dot') {
-        // Prefer the exact circle geometry from getCutoutPath() (native, API 31+).
-        // Fall back to bounding-rect estimation when the hidden API is unavailable.
+        // Prefer exact circle from getCutoutPath() (native, API 31+)
         const exact = cameraCircles[idx] ?? cameraCircles[0];
         const r  = exact ? exact.r  : rect.width / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
         const cy = exact ? exact.cy : rect.y + rect.height - r;
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
-        const orbitPath = Skia.Path.Make();
-        orbitPath.addOval(cameraOval);
-        glowPath!.addPath(orbitPath);
-
-        // Clip: exclude the camera circle so glow radiates outward only
+        mainPath.addOval(cameraOval);
         clipPath!.addOval(cameraOval);
       } else {
-        // Island: pill-shaped cutout (floating, rounded rect)
+        // Island: pill-shaped floating cutout
         const r = rect.height / 2;
-        const orbitPath = Skia.Path.Make();
-        orbitPath.addRRect(Skia.RRectXY(
+        mainPath.addRRect(Skia.RRectXY(
           Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
           r, r
         ));
-        glowPath!.addPath(orbitPath);
-
         clipPath!.addRRect(Skia.RRectXY(
           Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
           r, r
@@ -173,77 +179,48 @@ export default function StatusEdge({
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-      {/* Standard rendering for None / Notch / WaterDrop */}
-      {!isDotOrIsland && (
-        <>
-          <Path
-            path={path}
-            style="stroke"
-            strokeWidth={strokeWidth}
-            color={color}
-            start={start}
-            end={end}
-            strokeCap="round"
-          >
-            <BlurMask blur={blurRadius} style="normal" />
-          </Path>
-          <Path
-            path={path}
-            style="stroke"
-            strokeWidth={strokeWidth / 2}
-            color={color}
-            start={start}
-            end={end}
-            strokeCap="round"
-            opacity={0.8}
-          />
-        </>
-      )}
-
-      {/* Dot / Island: multi-layer outward glow beam */}
-      {isDotOrIsland && glowPath && clipPath && (
-        <Group clip={clipPath}>
-          {/* Outer halo – widest, softest */}
-          <Path
-            path={glowPath}
-            style="stroke"
-            strokeWidth={GLOW_SPREAD}
-            color={color}
-            start={start}
-            end={end}
-            strokeCap="round"
-            opacity={0.2}
-          >
-            <BlurMask blur={GLOW_SPREAD} style="normal" />
-          </Path>
-          {/* Mid glow */}
-          <Path
-            path={glowPath}
-            style="stroke"
-            strokeWidth={GLOW_SPREAD * 0.6}
-            color={color}
-            start={start}
-            end={end}
-            strokeCap="round"
-            opacity={0.45}
-          >
-            <BlurMask blur={GLOW_SPREAD * 0.5} style="normal" />
-          </Path>
-          {/* Inner glow – brightest, closest to boundary */}
-          <Path
-            path={glowPath}
-            style="stroke"
-            strokeWidth={GLOW_SPREAD * 0.25}
-            color={color}
-            start={start}
-            end={end}
-            strokeCap="round"
-            opacity={0.7}
-          >
-            <BlurMask blur={GLOW_SPREAD * 0.25} style="normal" />
-          </Path>
-        </Group>
-      )}
+      {/* All types share the same 3-layer outward glow beam */}
+      <Group clip={clipPath ?? undefined}>
+        {/* Outer halo – widest, softest */}
+        <Path
+          path={mainPath}
+          style="stroke"
+          strokeWidth={GLOW_SPREAD}
+          color={color}
+          start={start}
+          end={end}
+          strokeCap="round"
+          opacity={0.2}
+        >
+          <BlurMask blur={GLOW_SPREAD} style="normal" />
+        </Path>
+        {/* Mid glow */}
+        <Path
+          path={mainPath}
+          style="stroke"
+          strokeWidth={GLOW_SPREAD * 0.6}
+          color={color}
+          start={start}
+          end={end}
+          strokeCap="round"
+          opacity={0.45}
+        >
+          <BlurMask blur={GLOW_SPREAD * 0.5} style="normal" />
+        </Path>
+        {/* Inner glow – brightest, closest to boundary */}
+        <Path
+          path={mainPath}
+          style="stroke"
+          strokeWidth={GLOW_SPREAD * 0.25}
+          color={color}
+          start={start}
+          end={end}
+          strokeCap="round"
+          opacity={0.7}
+        >
+          <BlurMask blur={GLOW_SPREAD * 0.25} style="normal" />
+        </Path>
+      </Group>
     </Canvas>
   );
 }
