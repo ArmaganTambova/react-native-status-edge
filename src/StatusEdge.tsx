@@ -132,17 +132,16 @@ export default function StatusEdge({
     clipPath = Skia.Path.Make();
     clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
 
-    cutoutRects.forEach((rect) => {
+    const cameraCircles = data?.cameraCircles ?? [];
+
+    cutoutRects.forEach((rect, idx) => {
       if (cutoutType === 'Dot') {
-        // Circular punch-hole camera.
-        // Android reports the bounding rect starting at y=0 when the camera sits
-        // inside the status bar, so the actual circle center is at the bottom of
-        // the rect: cy = rect.y + rect.height - r.
-        // For a truly floating circular cutout (rect.height ≈ rect.width) this
-        // formula still resolves to the correct center.
-        const r = rect.width / 2;
-        const cx = rect.x + r;
-        const cy = rect.y + rect.height - r;
+        // Prefer the exact circle geometry from getCutoutPath() (native, API 31+).
+        // Fall back to bounding-rect estimation when the hidden API is unavailable.
+        const exact = cameraCircles[idx] ?? cameraCircles[0];
+        const r  = exact ? exact.r  : rect.width / 2;
+        const cx = exact ? exact.cx : rect.x + rect.width / 2;
+        const cy = exact ? exact.cy : rect.y + rect.height - r;
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
         const orbitPath = Skia.Path.Make();

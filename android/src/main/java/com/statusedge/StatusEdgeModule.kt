@@ -1,5 +1,7 @@
 package com.statusedge
 
+import android.graphics.Path
+import android.graphics.RectF
 import android.os.Build
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -93,8 +95,19 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
           }
         }
 
+        // Derive exact camera circle(s) from the cutout path shape.
+        // getCutoutPath() (@hide, API 31+) returns the actual geometric path of
+        // the physical camera hole — computeBounds() on that path gives the tight
+        // bounding rect, i.e. the exact circle center and radius.
+        val cameraCirclesArray = JSONArray()
+        if (displayCutout != null && (type == "Dot" || type == "Island")) {
+          val circle = extractCameraCircle(displayCutout, density)
+          if (circle != null) cameraCirclesArray.put(circle)
+        }
+
         json.put("cutoutType", type)
         json.put("cutoutRects", rectsArray)
+        json.put("cameraCircles", cameraCirclesArray)
         json.put("safeAreaTop", safeAreaTopDp)
 
         promise.resolve(json.toString())
@@ -104,10 +117,45 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Uses the hidden getCutoutPath() method (available since API 31 as @hide) to
+   * obtain the precise geometric shape of the physical camera hole.
+   * computeBounds() on the resulting Path gives the tight bounding rect from
+   * which we derive cx, cy, and r in density-independent pixels.
+   *
+   * Falls back gracefully to null on any error so the JS layer can use the
+   * bounding-rect estimation instead.
+   */
+  private fun extractCameraCircle(
+    displayCutout: android.view.DisplayCutout,
+    density: Float,
+  ): JSONObject? {
+    return try {
+      // @hide method — exists on API 31+, accessible via reflection
+      val method = displayCutout.javaClass.getDeclaredMethod("getCutoutPath")
+      method.isAccessible = true
+      val path = method.invoke(displayCutout) as? Path ?: return null
+      if (path.isEmpty) return null
+
+      val bounds = RectF()
+      path.computeBounds(bounds, /* exact= */ true)
+      if (bounds.isEmpty) return null
+
+      val obj = JSONObject()
+      obj.put("cx", (bounds.centerX() / density).toDouble())
+      obj.put("cy", (bounds.centerY() / density).toDouble())
+      obj.put("r",  (bounds.width()   / 2f / density).toDouble())
+      obj
+    } catch (_: Exception) {
+      null
+    }
+  }
+
   private fun buildDefaultJson(): JSONObject {
     val json = JSONObject()
     json.put("cutoutType", "None")
     json.put("cutoutRects", JSONArray())
+    json.put("cameraCircles", JSONArray())
     json.put("safeAreaTop", 0)
     return json
   }
