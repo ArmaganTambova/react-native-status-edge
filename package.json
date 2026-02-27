@@ -43,7 +43,19 @@
   "keywords": [
     "react-native",
     "ios",
-    "android"
+    "android",
+    "notch",
+    "dynamic-island",
+    "cutout",
+    "status-bar",
+    "skia",
+    "reanimated",
+    "animation",
+    "glow",
+    "loading",
+    "indicator",
+    "punch-hole",
+    "waterdrop"
   ],
   "repository": {
     "type": "git",
