@@ -83,10 +83,13 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
             }
 
             if (type == "Dot" || type == "Island") {
-              val circle = extractCameraCircleViaPath(displayCutout, density)
+              // Try to get precise camera shape from Path API first
+              val circlesFromPath = extractCameraCirclesViaPath(displayCutout, density)
 
-              if (circle != null) {
-                cameraCirclesArray.put(circle)
+              if (circlesFromPath.length() > 0) {
+                 for (i in 0 until circlesFromPath.length()) {
+                    cameraCirclesArray.put(circlesFromPath.getJSONObject(i))
+                 }
               } else {
                 // Fallback: derive circle from the safe-area bounding rect.
                 for (rect in rects) {
@@ -123,9 +126,11 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   }
 
   /**
-   * Derives the camera circle from the path returned by the hidden
-   * getCutoutPath() method, walking up the full class hierarchy to handle
-   * OEMs (e.g. Samsung) that subclass android.view.DisplayCutout.
+   * Derives the camera circles from the path returned by the public
+   * getCutoutPath() method (API 31+).
+   *
+   * It attempts to handle multiple cutouts if the path contains multiple detached contours,
+   * though typical getCutoutPath usually returns a single combined path.
    *
    * Two cases are handled based on the shape of the path bounding box:
    *
@@ -139,17 +144,29 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
    *      • Column bottom = camera bottom   (no bottom padding)
    *    Therefore cy = bounds.bottom − r, not the column midpoint.
    */
-  private fun extractCameraCircleViaPath(
+  private fun extractCameraCirclesViaPath(
     displayCutout: android.view.DisplayCutout,
     density: Float,
-  ): JSONObject? {
-    return try {
-      val path = findCutoutPath(displayCutout) ?: return null
-      if (path.isEmpty) return null
+  ): JSONArray {
+    val result = JSONArray()
+    try {
+      // Use public API available since Android 12 (API 31)
+      val path = displayCutout.cutoutPath ?: return result
+      if (path.isEmpty) return result
+
+      // In complex cases (multiple holes), the path might be composed of multiple
+      // detached figures. However, Path API doesn't easily expose sub-paths.
+      // We start by computing the bounds of the entire path.
+      // If we need to support dual-camera holes that are separate (like some older phones),
+      // we might need more complex path analysis, but usually "Island" covers that as one pill.
 
       val bounds = RectF()
       path.computeBounds(bounds, /* exact= */ true)
-      if (bounds.isEmpty) return null
+      if (bounds.isEmpty) return result
+
+      // Logic for single bounding box of the path.
+      // If the path is a pill (Island), bounds will be wide.
+      // If the path is a tall column (Samsung hidden hole), bounds will be tall.
 
       val r = Math.min(bounds.width(), bounds.height()) / 2f
       val cy = if (bounds.height() > bounds.width() * 1.2f) {
@@ -162,32 +179,11 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       obj.put("cx", (bounds.centerX() / density).toDouble())
       obj.put("cy", (cy / density).toDouble())
       obj.put("r",  (r / density).toDouble())
-      obj
+      result.put(obj)
     } catch (_: Exception) {
-      null
+      // Ignore errors, return empty array to trigger fallback
     }
-  }
-
-  /**
-   * Walks the class hierarchy of [displayCutout] to locate and invoke the
-   * hidden getCutoutPath() method.  getDeclaredMethod() only searches the
-   * exact runtime class; on OEMs that subclass android.view.DisplayCutout the
-   * method is declared on the parent, so we must traverse up.
-   */
-  private fun findCutoutPath(displayCutout: android.view.DisplayCutout): Path? {
-    var cls: Class<*>? = displayCutout.javaClass
-    while (cls != null) {
-      try {
-        val m = cls.getDeclaredMethod("getCutoutPath")
-        m.isAccessible = true
-        return m.invoke(displayCutout) as? Path
-      } catch (_: NoSuchMethodException) {
-        cls = cls.superclass
-      } catch (_: Exception) {
-        break
-      }
-    }
-    return null
+    return result
   }
 
   private fun buildDefaultJson(): JSONObject {
