@@ -150,36 +150,18 @@ export default function StatusEdge({
 
     cutoutRects.forEach((rect, idx) => {
       if (cutoutType === 'Dot') {
-        // Prefer exact circle from getCutoutPath() (native, API 31+).
-        // Native returns null when the path is an OEM safe-area column so that
-        // we always fall through to the cutoutRect-based calculation below.
+        // Use exact circle from native side (API 31+ getCutoutPath or native fallback).
+        // Since native side now guarantees to populate cameraCircles (either from path or math fallback),
+        // we can rely on it directly.
+        // Fallback to the first circle if index doesn't match (though arrays should be parallel).
         const exact = cameraCircles[idx] ?? cameraCircles[0];
-        // Use the minimum dimension as radius so we always get a circle that
-        // fits inside the bounding rect regardless of its aspect ratio.
+
+        // Default to calculating from rect only if absolutely no cameraCircles data came back
+        // (e.g. older Android versions or bridge failure), though native changes make this rare.
         const r  = exact ? exact.r  : Math.min(rect.width, rect.height) / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
-        // Fallback positioning for when exact camera data is unavailable (e.g. Android 11,
-        // or devices where the OS provides a tall safe-area column instead of a cutout path).
-        //
-        // If the reported rect is a tall column (h > w), the physical camera is rarely at the
-        // mathematical center (too high on Samsung) or at the bottom (too low).
-        // We use a weighted average (75% down) to approximate the visual center.
-        // For square/wide rects, we stick to the mathematical center.
-        let cy = 0;
-        if (exact) {
-          cy = exact.cy;
-        } else if (rect.height > rect.width * 1.2) {
-          // Significantly tall column (aspect ratio > 1.2):
-          // Likely a safe-area column (Samsung style) rather than a physical hole.
-          // Camera is lower than the middle.
-          // rect.y + rect.height is the bottom of the status bar.
-          // (rect.y + rect.height/2) is the middle.
-          // Averaging them places it at 75% height, which aligns better with actual hardware.
-          cy = rect.y + (rect.height * 0.75);
-        } else {
-          // Standard tight cutout (circular or slightly oval): Center is correct.
-          cy = rect.y + rect.height / 2;
-        }
+        const cy = exact ? exact.cy : rect.y + rect.height / 2;
+
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
         mainPath.addOval(cameraOval);
