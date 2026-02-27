@@ -140,13 +140,16 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      // Even if the path is a safe-area column (height > width), its vertical
-      // center often aligns with the camera center better than just using
-      // the bounding rect's center, especially if the OEM provides a specific path.
-      // However, for very tall columns, this might still be off, but combined
-      // with the JS-side fix (centering), we trust the path's geometry if available.
-      // We no longer return null for high aspect ratios, but instead provide
-      // the path's center as a "best effort" precise coordinate.
+      // Filter out paths that are clearly just safe-area columns (tall rectangles).
+      // On devices like Samsung S25 Ultra, getCutoutPath returns a path that
+      // matches the full status bar column (e.g. 50dp high), not the camera.
+      // A physical camera hole is roughly square (1:1 aspect ratio).
+      // We allow a small tolerance (up to 1.3:1) for oval cameras, but
+      // anything taller (like 1.5:1 or more) is likely a software "safe zone"
+      // and not the physical hole geometry we want.
+      // In these cases, we return null so the JS side can apply its own
+      // positioning logic (e.g. alignment heuristics) on the bounding rect.
+      if (bounds.height() > bounds.width() * 1.3f) return null
 
       val r  = Math.min(bounds.width(), bounds.height()) / 2f
       val obj = JSONObject()
