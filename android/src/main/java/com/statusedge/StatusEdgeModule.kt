@@ -34,6 +34,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       try {
         val json = JSONObject()
         val rectsArray = JSONArray()
+        val cameraCirclesArray = JSONArray()
         var type = "None"
         var safeAreaTopDp = 0f
 
@@ -92,17 +93,15 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
                 else                                  -> "Dot"
               }
             }
-          }
-        }
 
-        // Derive exact camera circle(s) from the cutout path shape.
-        // getCutoutPath() (@hide, API 31+) returns the actual geometric path of
-        // the physical camera hole — computeBounds() on that path gives the tight
-        // bounding rect, i.e. the exact circle center and radius.
-        val cameraCirclesArray = JSONArray()
-        if (displayCutout != null && (type == "Dot" || type == "Island")) {
-          val circle = extractCameraCircle(displayCutout, density)
-          if (circle != null) cameraCirclesArray.put(circle)
+            // Derive exact camera circle from the cutout path shape.
+            // getCutoutPath() (@hide, API 31+) returns the actual geometric path of
+            // the physical camera hole — computeBounds() gives the tight bounding rect.
+            if (type == "Dot" || type == "Island") {
+              val circle = extractCameraCircle(displayCutout, density)
+              if (circle != null) cameraCirclesArray.put(circle)
+            }
+          }
         }
 
         json.put("cutoutType", type)
