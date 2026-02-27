@@ -40,7 +40,8 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
         val density = reactApplicationContext.resources.displayMetrics.density
         val windowMetrics = activity.windowManager.currentWindowMetrics
-        val screenWidthPx = windowMetrics.bounds.width()
+        val screenWidthPx  = windowMetrics.bounds.width()
+        val screenHeightPx = windowMetrics.bounds.height()
 
         val decorView = activity.window.decorView
         val rootInsets = decorView.rootWindowInsets
@@ -53,8 +54,6 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
             val rects = displayCutout.boundingRects
 
             if (rects.isNotEmpty()) {
-              // Find the primary top cutout (highest priority for classification)
-              // Prefer cutouts attached to the top edge (top <= 10px threshold)
               val topCutouts = rects.filter { it.top <= 10 }
               val mainRect = if (topCutouts.isNotEmpty()) {
                 topCutouts.maxByOrNull { it.width() * it.height() }!!
@@ -62,7 +61,6 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
                 rects.maxByOrNull { it.width() * it.height() }!!
               }
 
-              // Add all rects converted to dp
               for (rect in rects) {
                 val rectObj = JSONObject()
                 rectObj.put("x", rect.left / density)
@@ -74,17 +72,8 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
               val widthPx = mainRect.width()
               val widthRatio = widthPx.toDouble() / screenWidthPx.toDouble()
-
-              // isAttachedToTop: 10px threshold handles rounding quirks across devices
               val isAttachedToTop = mainRect.top <= 10
 
-              // Classification by width ratio:
-              //   Notch     — attached, very wide  (>35%)
-              //   WaterDrop — attached, medium     (>15%, classic teardrop notch ~20-30%)
-              //   Dot       — attached, small      (<15%, punch-hole cameras ~5-10%
-              //               even when Android inflates the bounding rect slightly)
-              //   Island    — floating, wide       (>35%)
-              //   Dot       — floating, small
               type = when {
                 isAttachedToTop && widthRatio > 0.35 -> "Notch"
                 isAttachedToTop && widthRatio > 0.15 -> "WaterDrop"
@@ -94,16 +83,22 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
               }
             }
 
-            // Derive exact camera circle from the cutout path shape.
-            // getCutoutPath() (@hide, API 31+) returns the actual geometric path of
-            // the physical camera hole.
             if (type == "Dot" || type == "Island") {
-              val circle = extractCameraCircle(displayCutout, density)
+              // Strategy 1 (most accurate): parse the device's physical cutout spec string.
+              // config_mainBuiltInDisplayCutout defines the exact physical camera hole,
+              // without safe-area padding — the definitive source of truth.
+              val circle = extractPhysicalCameraCircle(screenWidthPx, screenHeightPx, density)
+              // Strategy 2: walk the class hierarchy to find getCutoutPath() (handles
+              // OEMs that subclass android.view.DisplayCutout).
+                ?: extractCameraCircleViaPath(displayCutout, density)
+
               if (circle != null) {
                 cameraCirclesArray.put(circle)
               } else {
-                // Fallback: If path API fails or returns nothing, derive circles from bounding rects mathematically.
-                // This ensures JS always receives valid cameraCircles data.
+                // Strategy 3 (guaranteed fallback): derive circle from the safe-area
+                // bounding rect.  cy = exactCenterY() places the circle at the centre
+                // of the safe-area column, which is the best estimate we can make
+                // without physical-hole data.
                 for (rect in rects) {
                   val r = Math.min(rect.width(), rect.height()) / 2f
                   val circleObj = JSONObject()
@@ -130,34 +125,92 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   }
 
   /**
-   * Uses the hidden getCutoutPath() method (available since API 31 as @hide) to
-   * obtain the precise geometric shape of the physical camera hole.
-   * computeBounds() on the resulting Path gives the tight bounding rect from
-   * which we derive cx, cy, and r in density-independent pixels.
+   * Reads the hardware cutout specification from the Android system resource
+   * "config_mainBuiltInDisplayCutout" and parses it via the hidden static
+   * factory method DisplayCutout.fromSpec().
    *
-   * Falls back gracefully to null on any error so the JS layer can use the
-   * bounding-rect estimation instead.
+   * This returns the PHYSICAL camera hole geometry — the ground-truth that the
+   * framework itself uses internally — without any safe-area padding.  On OEM
+   * devices like Samsung, DisplayCutout.boundingRects (and getCutoutPath) are
+   * inflated by a safe-area margin; this method bypasses that inflation entirely.
+   *
+   * Returns null on any error so callers can fall through to the next strategy.
    */
-  private fun extractCameraCircle(
+  private fun extractPhysicalCameraCircle(
+    screenWidthPx: Int,
+    screenHeightPx: Int,
+    density: Float,
+  ): JSONObject? {
+    return try {
+      // Read the spec string that defines the physical cutout shape.
+      val resources = android.content.res.Resources.getSystem()
+      val id = resources.getIdentifier(
+        "config_mainBuiltInDisplayCutout", "string", "android"
+      )
+      if (id == 0) return null
+      val spec = resources.getString(id)
+      if (spec.isNullOrBlank() || spec.equals("none", ignoreCase = true)) return null
+
+      // DisplayCutout.fromSpec() is @hide but has been stable since API 30.
+      // It parses the SVG-like path spec and returns a DisplayCutout whose
+      // boundingRects are the tight physical camera-hole bounds (no padding).
+      val clazz = Class.forName("android.view.DisplayCutout")
+      val fromSpec = clazz.getDeclaredMethod(
+        "fromSpec",
+        String::class.java,
+        Int::class.java,
+        Int::class.java,
+        Float::class.java,
+      )
+      fromSpec.isAccessible = true
+      val physical = fromSpec.invoke(null, spec, screenWidthPx, screenHeightPx, density)
+        as? android.view.DisplayCutout ?: return null
+
+      val physRects = physical.boundingRects
+      if (physRects.isEmpty()) return null
+
+      // For top punch-hole cameras choose the topmost physical rect.
+      val rect = physRects.minByOrNull { it.top } ?: return null
+
+      // Reject degenerate results (e.g. spec returned a full-screen rect).
+      if (rect.width() <= 0 || rect.height() <= 0) return null
+      if (rect.width() > screenWidthPx / 2) return null
+
+      val r = Math.min(rect.width(), rect.height()) / 2f
+      val obj = JSONObject()
+      obj.put("cx", (rect.exactCenterX() / density).toDouble())
+      obj.put("cy", (rect.exactCenterY() / density).toDouble())
+      obj.put("r",  (r / density).toDouble())
+      obj
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  /**
+   * Obtains the camera-hole Path via the hidden getCutoutPath() method.
+   * Unlike the single getDeclaredMethod() call, this walks up the full class
+   * hierarchy so it works on OEMs (e.g. Samsung) that subclass
+   * android.view.DisplayCutout — the method is declared on the parent class and
+   * getDeclaredMethod() alone would throw NoSuchMethodException on subclasses.
+   *
+   * If the path turns out to be the safe-area column (height ≫ width), we still
+   * extract a useful approximation: width gives the diameter and centerY() gives
+   * a reasonable cy (≈ safeAreaTop/2, close to the camera centre for most OEMs).
+   */
+  private fun extractCameraCircleViaPath(
     displayCutout: android.view.DisplayCutout,
     density: Float,
   ): JSONObject? {
     return try {
-      // @hide method — exists on API 31+, accessible via reflection
-      val method = displayCutout.javaClass.getDeclaredMethod("getCutoutPath")
-      method.isAccessible = true
-      val path = method.invoke(displayCutout) as? Path ?: return null
+      val path = findCutoutPath(displayCutout) ?: return null
       if (path.isEmpty) return null
 
       val bounds = RectF()
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      // Even if the path is a tall "safe area" column (common on Samsung),
-      // we do not discard it. We derive the camera circle mathematically
-      // by using the width (usually accurate) as the diameter and centering
-      // the circle within the bounds.
-      val r  = Math.min(bounds.width(), bounds.height()) / 2f
+      val r = Math.min(bounds.width(), bounds.height()) / 2f
       val obj = JSONObject()
       obj.put("cx", (bounds.centerX() / density).toDouble())
       obj.put("cy", (bounds.centerY() / density).toDouble())
@@ -166,6 +219,27 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     } catch (_: Exception) {
       null
     }
+  }
+
+  /**
+   * Walks the class hierarchy of [displayCutout] to locate and invoke the
+   * hidden getCutoutPath() method.  This is necessary because getDeclaredMethod()
+   * only searches the exact runtime class, not its superclasses.
+   */
+  private fun findCutoutPath(displayCutout: android.view.DisplayCutout): Path? {
+    var cls: Class<*>? = displayCutout.javaClass
+    while (cls != null) {
+      try {
+        val m = cls.getDeclaredMethod("getCutoutPath")
+        m.isAccessible = true
+        return m.invoke(displayCutout) as? Path
+      } catch (_: NoSuchMethodException) {
+        cls = cls.superclass
+      } catch (_: Exception) {
+        break
+      }
+    }
+    return null
   }
 
   private fun buildDefaultJson(): JSONObject {
