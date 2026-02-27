@@ -158,10 +158,28 @@ export default function StatusEdge({
         // fits inside the bounding rect regardless of its aspect ratio.
         const r  = exact ? exact.r  : Math.min(rect.width, rect.height) / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
-        // Always align to the vertical center of the reported cutout rect.
-        // This handles both tight bounding boxes (center is center) and
-        // safe-area columns (where the camera is typically centered within the reported area).
-        const cy = exact ? exact.cy : rect.y + rect.height / 2;
+        // Fallback positioning for when exact camera data is unavailable (e.g. Android 11,
+        // or devices where the OS provides a tall safe-area column instead of a cutout path).
+        //
+        // If the reported rect is a tall column (h > w), the physical camera is rarely at the
+        // mathematical center (too high on Samsung) or at the bottom (too low).
+        // We use a weighted average (75% down) to approximate the visual center.
+        // For square/wide rects, we stick to the mathematical center.
+        let cy = 0;
+        if (exact) {
+          cy = exact.cy;
+        } else if (rect.height > rect.width * 1.2) {
+          // Significantly tall column (aspect ratio > 1.2):
+          // Likely a safe-area column (Samsung style) rather than a physical hole.
+          // Camera is lower than the middle.
+          // rect.y + rect.height is the bottom of the status bar.
+          // (rect.y + rect.height/2) is the middle.
+          // Averaging them places it at 75% height, which aligns better with actual hardware.
+          cy = rect.y + (rect.height * 0.75);
+        } else {
+          // Standard tight cutout (circular or slightly oval): Center is correct.
+          cy = rect.y + rect.height / 2;
+        }
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
         mainPath.addOval(cameraOval);
