@@ -140,24 +140,21 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      val r  = bounds.width() / 2f
-      val cx = bounds.centerX()
-      // Some OEMs (e.g. Samsung) return the entire status-bar safe-area column
-      // from getCutoutPath() rather than just the physical camera hole.
-      // In that case the bounding rect is portrait-oriented (height > 1.5 × width)
-      // and computeBounds().centerY() lands at the column mid-point — above the
-      // actual camera.  The camera hole sits at the BOTTOM of the column, tangent
-      // to the safe-area boundary, so its centre is at (bottom − r).
-      val cy = if (bounds.height() > bounds.width() * 1.5f) {
-        bounds.bottom - r
-      } else {
-        bounds.centerY()
-      }
+      // Some OEMs (e.g. Samsung) return the full status-bar safe-area column
+      // from getCutoutPath() instead of just the physical camera hole.
+      // The column spans from y=0 to y≈safeAreaTop (~50-60 dp), so its
+      // bounds.bottom is at the BOTTOM of the status bar — nowhere near the
+      // physical camera, which sits near y=0.  There is no reliable way to
+      // recover the actual camera centre from such a path, so we return null
+      // and let the JS fallback use cutoutRect (displayCutout.boundingRects),
+      // which is a tight bound on the physical hole and gives the correct cy.
+      if (bounds.height() > bounds.width() * 1.5f) return null
 
+      val r  = bounds.width() / 2f
       val obj = JSONObject()
-      obj.put("cx", (cx / density).toDouble())
-      obj.put("cy", (cy / density).toDouble())
-      obj.put("r",  (r  / density).toDouble())
+      obj.put("cx", (bounds.centerX() / density).toDouble())
+      obj.put("cy", (bounds.centerY() / density).toDouble())
+      obj.put("r",  (r / density).toDouble())
       obj
     } catch (_: Exception) {
       null
