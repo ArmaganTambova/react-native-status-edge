@@ -140,17 +140,15 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      // Some OEMs (e.g. Samsung) return the full status-bar safe-area column
-      // from getCutoutPath() instead of just the physical camera hole.
-      // The column spans from y=0 to y≈safeAreaTop (~50-60 dp), so its
-      // bounds.bottom is at the BOTTOM of the status bar — nowhere near the
-      // physical camera, which sits near y=0.  There is no reliable way to
-      // recover the actual camera centre from such a path, so we return null
-      // and let the JS fallback use cutoutRect (displayCutout.boundingRects),
-      // which is a tight bound on the physical hole and gives the correct cy.
-      if (bounds.height() > bounds.width() * 1.5f) return null
+      // Even if the path is a safe-area column (height > width), its vertical
+      // center often aligns with the camera center better than just using
+      // the bounding rect's center, especially if the OEM provides a specific path.
+      // However, for very tall columns, this might still be off, but combined
+      // with the JS-side fix (centering), we trust the path's geometry if available.
+      // We no longer return null for high aspect ratios, but instead provide
+      // the path's center as a "best effort" precise coordinate.
 
-      val r  = bounds.width() / 2f
+      val r  = Math.min(bounds.width(), bounds.height()) / 2f
       val obj = JSONObject()
       obj.put("cx", (bounds.centerX() / density).toDouble())
       obj.put("cy", (bounds.centerY() / density).toDouble())
