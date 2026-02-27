@@ -132,17 +132,11 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
    * It attempts to handle multiple cutouts if the path contains multiple detached contours,
    * though typical getCutoutPath usually returns a single combined path.
    *
-   * Two cases are handled based on the shape of the path bounding box:
-   *
-   * 1. Nearly-square bounds (width ≈ height): the path IS the physical camera
-   *    circle (e.g. Pixel devices).  Use cy = bounds.centerY().
-   *
-   * 2. Tall column (height > width × 1.2): the OEM returns the safe-area slab
-   *    instead of the physical hole (e.g. Samsung).  Verified from Samsung's
-   *    config_mainBuiltInDisplayCutout spec:
-   *      • Column width  = camera diameter (no horizontal padding)
-   *      • Column bottom = camera bottom   (no bottom padding)
-   *    Therefore cy = bounds.bottom − r, not the column midpoint.
+   * Logic Update:
+   * We prioritize the geometric center (centerY) of the path bounds.
+   * Previous logic aligned "tall" paths to the bottom, which caused misalignment on some
+   * newer Samsung devices (S25 Ultra) where the path is tall but centered.
+   * We now only apply special alignment if the aspect ratio is extreme (> 2.0).
    */
   private fun extractCameraCirclesViaPath(
     displayCutout: android.view.DisplayCutout,
@@ -154,25 +148,20 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       val path = displayCutout.cutoutPath ?: return result
       if (path.isEmpty) return result
 
-      // In complex cases (multiple holes), the path might be composed of multiple
-      // detached figures. However, Path API doesn't easily expose sub-paths.
-      // We start by computing the bounds of the entire path.
-      // If we need to support dual-camera holes that are separate (like some older phones),
-      // we might need more complex path analysis, but usually "Island" covers that as one pill.
-
       val bounds = RectF()
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return result
 
-      // Logic for single bounding box of the path.
-      // If the path is a pill (Island), bounds will be wide.
-      // If the path is a tall column (Samsung hidden hole), bounds will be tall.
-
       val r = Math.min(bounds.width(), bounds.height()) / 2f
-      val cy = if (bounds.height() > bounds.width() * 1.2f) {
-        bounds.bottom - r   // tall column: camera bottom-aligned
+
+      // Use geometric center by default.
+      // Only bottom-align if it's an extremely tall column (e.g. > 2x height/width),
+      // which might suggest a waterfall cutout or very specific safe-area slab.
+      // S25 Ultra has ratio ~1.66 (30/18), so it will now use centerY().
+      val cy = if (bounds.height() > bounds.width() * 2.0f) {
+        bounds.bottom - r
       } else {
-        bounds.centerY()    // square/circle path: use geometric centre
+        bounds.centerY()
       }
 
       val obj = JSONObject()
