@@ -150,11 +150,23 @@ export default function StatusEdge({
 
     cutoutRects.forEach((rect, idx) => {
       if (cutoutType === 'Dot') {
-        // Prefer exact circle from getCutoutPath() (native, API 31+)
+        // Prefer exact circle from getCutoutPath() (native, API 31+).
+        // Native returns null when the path is an OEM safe-area column so that
+        // we always fall through to the cutoutRect-based calculation below.
         const exact = cameraCircles[idx] ?? cameraCircles[0];
-        const r  = exact ? exact.r  : rect.width / 2;
+        // Use the minimum dimension as radius so we always get a circle that
+        // fits inside the bounding rect regardless of its aspect ratio.
+        const r  = exact ? exact.r  : Math.min(rect.width, rect.height) / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
-        const cy = exact ? exact.cy : rect.y + rect.height - r;
+        // Column-shaped cutoutRect (height > 1.5× width): the camera hole sits
+        // at the very TOP of the column, so anchor from the top (cy = rect.y + r).
+        // Normal tight rect (height ≈ width): bottom-align so the circle bottom
+        // sits flush with the rect bottom, which matches the physical hole.
+        const cy = exact
+          ? exact.cy
+          : rect.height > rect.width * 1.5
+            ? rect.y + r
+            : rect.y + rect.height - r;
         const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
 
         mainPath.addOval(cameraOval);
