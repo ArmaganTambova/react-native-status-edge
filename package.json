@@ -1,6 +1,6 @@
 {
   "name": "react-native-status-edge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A high-performance, Skia-powered fluid status indicator and dynamic notch animation library for React Native.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
