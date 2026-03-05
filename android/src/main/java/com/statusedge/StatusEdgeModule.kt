@@ -112,16 +112,28 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     val attachedToTop = mainRect.top <= safeInsetTopPx
     val aspectRatio = mainRect.width().toFloat() / mainRect.height().coerceAtLeast(1).toFloat()
 
+    // Primary signal: bounding rect aspect ratio (width / height).
+    // A punch-hole (Dot) is circular → aspect ratio ≈ 1.0 (square-ish rect).
+    // A WaterDrop notch is wider than it is tall → aspect ratio > ~1.4.
+    // This signal is reliable regardless of whether getCutoutPath() returns
+    // a circle or an OEM-specific tall safe-area slab.
+    val rectIsCircular = aspectRatio <= 1.5f
+
+    // Secondary signal: path contour roundness. On devices where getCutoutPath()
+    // returns the actual camera circle (most non-Samsung OEMs), this confirms
+    // and extends the dot detection range slightly.
     val roundContourOnMainRect = contours
       .filter { isRoundish(it) }
       .maxOfOrNull { intersectionScore(mainRect, it) }
       ?.let { it > 0.25f } == true
 
-    // Critical fix: some punch-hole phones report a top-attached bounding rect;
-    // avoid misclassifying them as WaterDrop.
+    // A cutout is a Dot if its bounding rect is square-ish (primary) or
+    // the path contour is circular (secondary), and it is not too wide.
+    // Real punch-holes are < ~8 mm on any screen; bounding rect typically
+    // stays under 17 % of screen width even with OEM padding.
     val likelyDot =
-      (roundContourOnMainRect && widthRatio <= 0.16f) ||
-      (!roundContourOnMainRect && widthRatio <= 0.12f && abs(aspectRatio - 1f) <= 0.45f)
+      (roundContourOnMainRect && widthRatio <= 0.20f) ||
+      (rectIsCircular && widthRatio <= 0.17f)
 
     return if (attachedToTop) {
       when {
