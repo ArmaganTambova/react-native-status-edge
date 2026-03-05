@@ -61,6 +61,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
           result.put("cutoutRects", rectsArray)
           result.put("cameraCircles", circlesArray)
           result.put("safeAreaTop", displayCutout.safeInsetTop / density)
+          result.put("cutoutPathSvg", pathToSvg(displayCutout.cutoutPath))
           promise.resolve(result.toString())
           return@runOnUiThread
         }
@@ -71,11 +72,12 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
         val safeInsetTopPx = displayCutout.safeInsetTop
         val screenWidthPx = windowMetrics.bounds.width().coerceAtLeast(1)
+        val contours = getContourBounds(displayCutout.cutoutPath)
         val mainRect = selectMainRect(rectsPx, safeInsetTopPx)
-        val type = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx)
+        val type = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx, contours)
 
         if (type == "Dot") {
-          val circles = extractDotCircles(displayCutout, rectsPx, density, safeInsetTopPx.toFloat())
+          val circles = extractDotCircles(rectsPx, contours, density, safeInsetTopPx.toFloat())
           for (i in 0 until circles.length()) {
             circlesArray.put(circles.getJSONObject(i))
           }
@@ -85,6 +87,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         result.put("cutoutRects", rectsArray)
         result.put("cameraCircles", circlesArray)
         result.put("safeAreaTop", safeInsetTopPx / density)
+        result.put("cutoutPathSvg", pathToSvg(displayCutout.cutoutPath))
 
         promise.resolve(result.toString())
       } catch (e: Exception) {
@@ -99,26 +102,45 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       .maxByOrNull { it.width() * it.height() }!!
   }
 
-  private fun classifyCutout(mainRect: Rect, safeInsetTopPx: Int, screenWidthPx: Int): String {
+  private fun classifyCutout(
+    mainRect: Rect,
+    safeInsetTopPx: Int,
+    screenWidthPx: Int,
+    contours: List<RectF>,
+  ): String {
     val widthRatio = mainRect.width().toFloat() / screenWidthPx.toFloat()
     val attachedToTop = mainRect.top <= safeInsetTopPx
     val aspectRatio = mainRect.width().toFloat() / mainRect.height().coerceAtLeast(1).toFloat()
 
+    val roundContourOnMainRect = contours
+      .filter { isRoundish(it) }
+      .maxOfOrNull { intersectionScore(mainRect, it) }
+      ?.let { it > 0.25f } == true
+
+    // Critical fix: some punch-hole phones report a top-attached bounding rect;
+    // avoid misclassifying them as WaterDrop.
+    val likelyDot =
+      (roundContourOnMainRect && widthRatio <= 0.16f) ||
+      (!roundContourOnMainRect && widthRatio <= 0.12f && abs(aspectRatio - 1f) <= 0.45f)
+
     return if (attachedToTop) {
-      if (widthRatio >= 0.22f) "Notch" else "WaterDrop"
+      when {
+        widthRatio >= 0.22f -> "Notch"
+        likelyDot -> "Dot"
+        else -> "WaterDrop"
+      }
     } else {
       if (widthRatio >= 0.18f || aspectRatio >= 2.2f) "Island" else "Dot"
     }
   }
 
   private fun extractDotCircles(
-    displayCutout: DisplayCutout,
     rects: List<Rect>,
+    contourBounds: List<RectF>,
     density: Float,
     safeInsetTopPx: Float,
   ): JSONArray {
     val circles = JSONArray()
-    val contourBounds = getContourBounds(displayCutout.cutoutPath)
 
     rects.forEach { rect ->
       val matchedContour = contourBounds
@@ -154,6 +176,27 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     } while (measure.nextContour())
 
     return bounds
+  }
+
+  private fun pathToSvg(path: Path?): String {
+    if (path == null || path.isEmpty) return ""
+
+    val points = path.approximate(0.5f)
+    if (points.isEmpty()) return ""
+
+    val builder = StringBuilder()
+    var first = true
+    for (i in points.indices step 3) {
+      val x = points[i + 1]
+      val y = points[i + 2]
+      if (first) {
+        builder.append("M ").append(x).append(' ').append(y)
+        first = false
+      } else {
+        builder.append(" L ").append(x).append(' ').append(y)
+      }
+    }
+    return builder.toString()
   }
 
   private fun isRoundish(rect: RectF): Boolean {
@@ -215,11 +258,6 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /**
-   * Samsung and some OEMs define the safe area around punch-hole cameras using
-   * bottom-aligned paths. This nudges Y upward when the contour bottom almost
-   * matches safeInsetTop so the ring center aligns better with the physical lens.
-   */
   private fun bestCy(
     centerY: Float,
     bottomY: Float,
@@ -253,6 +291,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     put("cutoutRects", JSONArray())
     put("cameraCircles", JSONArray())
     put("safeAreaTop", 0)
+    put("cutoutPathSvg", "")
   }
 
   companion object {
