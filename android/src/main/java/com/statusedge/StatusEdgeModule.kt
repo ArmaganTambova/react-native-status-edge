@@ -25,7 +25,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       return
     }
 
-    // DisplayCutout.getBoundingRects() requires API 28 (Android 9)
+    // DisplayCutout.getBoundingRects() is available since API 28 (Android 9).
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
       promise.resolve(buildDefaultJson().toString())
       return
@@ -45,7 +45,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         // Use window-accurate density for pixel↔dp conversion.
         // WindowMetrics.getDensity() (API 34+) is tied to the actual window,
         // avoiding errors with multi-display or display-size accessibility scaling.
-        // Below API 34 use the activity's display metrics (activity is a UiContext).
+        // Below API 34, use the activity's display metrics (activity is a UiContext).
         @Suppress("DEPRECATION")
         val density: Float = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
           windowMetrics.density
@@ -54,9 +54,9 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         }
 
         // Obtain display cutout:
-        // • API 31+: use WindowMetrics.windowInsets — snapshot is tied to the window
-        //   at metrics-query time, more reliable than decorView.rootWindowInsets which
-        //   may not be populated before the first layout pass.
+        // • API 31+: WindowMetrics.windowInsets is a snapshot tied to the window at
+        //   query time — more reliable than decorView.rootWindowInsets which may be
+        //   null or stale before the first layout pass.
         // • API 28–30: fall back to decorView.rootWindowInsets.
         val displayCutout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
           windowMetrics.windowInsets.displayCutout
@@ -69,7 +69,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
           val rects = displayCutout.boundingRects
 
           if (rects.isNotEmpty()) {
-            // A cutout is "attached to the top" when its top edge is within the
+            // A cutout is "attached to the top" when its top edge sits inside the
             // safe-inset region (not a floating island below the status bar).
             val safeTopPx = displayCutout.safeInsetTop
             val topCutouts = rects.filter { it.top < safeTopPx }
@@ -103,23 +103,13 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
           if (type == "Dot" || type == "Island") {
             val safeInsetTopPx = displayCutout.safeInsetTop.toFloat()
-
-            // getCutoutPath() available on API 31+
-            val circle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-              extractCameraCircleViaPath(displayCutout, density, safeInsetTopPx)
-            } else {
-              null
-            }
-
+            val circle = extractCameraCircle(displayCutout, density, safeInsetTopPx)
             if (circle != null) {
-              cameraCirclesArray.put(circle)
+              cameraCirclesArray.put(circle as Any)
             } else {
-              // Fallback for API 28–30 or when getCutoutPath() is unavailable:
-              // derive circle from the bounding rect geometry.
               for (rect in rects) {
-                // Camera width = physical camera diameter; use width/2 as radius.
                 val r = rect.width() / 2f
-                val cy = circleCenter(
+                val cy = bestCy(
                   rectCenterY    = rect.exactCenterY(),
                   rectBottomY    = rect.bottom.toFloat(),
                   rectHeightPx   = rect.height().toFloat(),
@@ -131,7 +121,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
                 circleObj.put("cx", (rect.exactCenterX() / density).toDouble())
                 circleObj.put("cy", (cy / density).toDouble())
                 circleObj.put("r",  (r / density).toDouble())
-                cameraCirclesArray.put(circleObj)
+                cameraCirclesArray.put(circleObj as Any)
               }
             }
           }
@@ -150,23 +140,17 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   }
 
   /**
-   * Derives the camera circle from the path returned by the hidden
-   * getCutoutPath() method, walking up the full class hierarchy to handle
-   * OEMs (e.g. Samsung) that subclass android.view.DisplayCutout.
+   * Uses the hidden getCutoutPath() method (API 31+, @hide) to obtain the
+   * precise geometric path of the physical camera hole.
    *
-   * Shape cases:
+   * Walks the full class hierarchy so that OEM subclasses of DisplayCutout
+   * (e.g. Samsung) are also handled correctly.
    *
-   * 1. Tall column (height > width × 1.2): OEM returns the safe-area slab
-   *    (e.g. some Samsung firmware).  Width = camera diameter, bottom = camera
-   *    bottom (Samsung spec: no horizontal/bottom padding).
-   *    → r = width/2,  cy = bounds.bottom − r
-   *
-   * 2. Near-square / circle (width ≈ height): path IS the physical camera
-   *    non-functional area (e.g. Pixel, most Samsung API 31+ devices).
-   *    → r = width/2,  cy via circleCenter() which corrects for
-   *    Samsung's "bottom-aligned" circle (circle bottom ≈ safeInsetTop).
+   * The derived circle uses [bestCy] to correct for Samsung's bottom-aligned
+   * safe-area circle, where the raw geometric centre sits lower than the
+   * physical camera lens.
    */
-  private fun extractCameraCircleViaPath(
+  private fun extractCameraCircle(
     displayCutout: android.view.DisplayCutout,
     density: Float,
     safeInsetTopPx: Float,
@@ -179,10 +163,10 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       path.computeBounds(bounds, /* exact= */ true)
       if (bounds.isEmpty) return null
 
-      // Always use width as the camera dimension – horizontal extent equals the
-      // physical camera diameter on both circle-path and column-path devices.
+      // Use width/2 as radius — width equals the physical camera diameter on
+      // both circle-path (Pixel, Samsung API 31+) and column-path OEM variants.
       val r = bounds.width() / 2f
-      val cy = circleCenter(
+      val cy = bestCy(
         rectCenterY    = bounds.centerY(),
         rectBottomY    = bounds.bottom,
         rectHeightPx   = bounds.height(),
@@ -204,23 +188,20 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   /**
    * Calculates the best-estimate camera circle centre Y (in pixels).
    *
-   * Samsung (and some other OEMs) define the safe-area path as a column or
-   * circle whose BOTTOM edge coincides with safeInsetTop (the status-bar
-   * bottom), with no bottom padding.  The raw geometric centre of such a shape
-   * sits lower than the physical camera because the safe-area extends the full
-   * status-bar height above the lens.
+   * Samsung One UI defines the safe-area path as a column or circle whose
+   * BOTTOM edge coincides with safeInsetTop (status-bar bottom), with no
+   * bottom padding.  The raw geometric centre of that shape sits lower than
+   * the physical camera lens.
    *
-   * Correction strategy (applied when the shape bottom is within 5 % of
-   * safeInsetTop):
-   *   • The physical camera occupies the lower portion of the status bar.
-   *   • We blend the raw geometric centre (cy_raw) with the status-bar midpoint
-   *     (safeInsetTop / 2) using a 50 / 50 weight.  This empirically matches
-   *     Samsung One UI devices where the punch-hole sits in the lower-centre of
-   *     the status bar.
-   *   • For column-shaped paths (height > width × 1.2) the raw cy already uses
-   *     bottom − r (= camera bottom − radius), so no additional blend is needed.
+   * When the shape bottom is within 5 % of safeInsetTop we blend the raw
+   * centre with the status-bar midpoint (50/50), pulling the animation ring
+   * up to match the physical camera position on Samsung devices.
+   *
+   * For tall-column shapes (height > width × 1.2) the raw cy is already
+   * bottom − r (camera bottom − radius = camera centre), so no further
+   * blend is needed.
    */
-  private fun circleCenter(
+  private fun bestCy(
     rectCenterY: Float,
     rectBottomY: Float,
     rectHeightPx: Float,
@@ -230,25 +211,18 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   ): Float {
     val isTallColumn = rectHeightPx > rectWidthPx * 1.2f
 
-    // Raw best-estimate for cy:
-    //   • Tall column → camera bottom-aligned (Samsung column spec)
-    //   • Circle/oval  → geometric centre of the path
     val cyCandidatePx = if (isTallColumn) {
-      rectBottomY - r
+      rectBottomY - r          // Samsung column: bottom edge = camera bottom
     } else {
-      rectCenterY
+      rectCenterY              // Circle/oval path: geometric centre
     }
 
-    // For circle-shaped paths check whether the bottom is bottom-aligned to
-    // the safe area (Samsung behaviour). If so, blend toward the status-bar
-    // midpoint to correct for the safe-area padding above the physical lens.
+    // Apply Samsung bottom-aligned circle correction.
     if (!isTallColumn && safeInsetTopPx > 0f) {
       val bottomGapFraction = (safeInsetTopPx - rectBottomY) / safeInsetTopPx
       if (bottomGapFraction < 0.05f) {
-        // Circle bottom ≈ safeInsetTop → Samsung bottom-aligned circle.
-        // Physical camera centre ≈ midpoint of (raw cy, status-bar centre).
-        val safeAreaMidPx = safeInsetTopPx / 2f
-        return (cyCandidatePx + safeAreaMidPx) / 2f
+        // Circle bottom ≈ safeInsetTop → blend toward status-bar midpoint.
+        return (cyCandidatePx + safeInsetTopPx / 2f) / 2f
       }
     }
 
