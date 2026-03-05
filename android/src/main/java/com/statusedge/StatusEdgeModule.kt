@@ -1,21 +1,24 @@
 package com.statusedge
 
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
+import android.view.DisplayCutout
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.UiThreadUtil
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 class StatusEdgeModule(reactContext: ReactApplicationContext) :
   NativeStatusEdgeSpec(reactContext) {
 
-  override fun getName(): String {
-    return NAME
-  }
+  override fun getName(): String = NAME
 
   @ReactMethod
   override fun getCutoutData(promise: Promise) {
@@ -25,241 +28,231 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       return
     }
 
-    // DisplayCutout.getBoundingRects() is available since API 28 (Android 9).
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+    // Product requirement: Android 12+ only.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
       promise.resolve(buildDefaultJson().toString())
       return
     }
 
     UiThreadUtil.runOnUiThread {
       try {
-        val json = JSONObject()
+        val result = JSONObject()
         val rectsArray = JSONArray()
-        val cameraCirclesArray = JSONArray()
-        var type = "None"
-        var safeAreaTopDp = 0f
+        val circlesArray = JSONArray()
 
-        val density = reactApplicationContext.resources.displayMetrics.density
         val windowMetrics = activity.windowManager.currentWindowMetrics
-        val screenWidthPx = windowMetrics.bounds.width()
+        val displayCutout = windowMetrics.windowInsets.displayCutout
 
-        // Use window-accurate density for pixel↔dp conversion.
-        // WindowMetrics.getDensity() (API 34+) is tied to the actual window,
-        // avoiding errors with multi-display or display-size accessibility scaling.
-        // Below API 34, use the activity's display metrics (activity is a UiContext).
         @Suppress("DEPRECATION")
-        val density: Float = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val density = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
           windowMetrics.density
         } else {
           activity.resources.displayMetrics.density
         }
 
-        // Obtain display cutout:
-        // • API 31+: WindowMetrics.windowInsets is a snapshot tied to the window at
-        //   query time — more reliable than decorView.rootWindowInsets which may be
-        //   null or stale before the first layout pass.
-        // • API 28–30: fall back to decorView.rootWindowInsets.
-        val displayCutout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-          windowMetrics.windowInsets.displayCutout
-        } else {
-          activity.window.decorView.rootWindowInsets?.displayCutout
+        if (displayCutout == null) {
+          promise.resolve(buildDefaultJson().toString())
+          return@runOnUiThread
         }
 
-          if (displayCutout != null) {
-            safeAreaTopDp = displayCutout.safeInsetTop / density
-            val rects = displayCutout.boundingRects
+        val rectsPx = displayCutout.boundingRects
+        if (rectsPx.isEmpty()) {
+          result.put("cutoutType", "None")
+          result.put("cutoutRects", rectsArray)
+          result.put("cameraCircles", circlesArray)
+          result.put("safeAreaTop", displayCutout.safeInsetTop / density)
+          promise.resolve(result.toString())
+          return@runOnUiThread
+        }
 
-          if (rects.isNotEmpty()) {
-            // A cutout is "attached to the top" when its top edge sits inside the
-            // safe-inset region (not a floating island below the status bar).
-            val safeTopPx = displayCutout.safeInsetTop
-            val topCutouts = rects.filter { it.top < safeTopPx }
-            val mainRect = if (topCutouts.isNotEmpty()) {
-              topCutouts.maxByOrNull { it.width() * it.height() }!!
-            } else {
-              rects.maxByOrNull { it.width() * it.height() }!!
-            }
+        rectsPx.forEach { rect ->
+          rectsArray.put(rectToDpJson(rect, density))
+        }
 
-            for (rect in rects) {
-              val rectObj = JSONObject()
-              rectObj.put("x", rect.left / density)
-              rectObj.put("y", rect.top / density)
-              rectObj.put("width", rect.width() / density)
-              rectObj.put("height", rect.height() / density)
-              rectsArray.put(rectObj)
-            }
+        val safeInsetTopPx = displayCutout.safeInsetTop
+        val screenWidthPx = windowMetrics.bounds.width().coerceAtLeast(1)
+        val mainRect = selectMainRect(rectsPx, safeInsetTopPx)
+        val type = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx)
 
-            val widthPx = mainRect.width()
-            val widthRatio = widthPx.toDouble() / screenWidthPx.toDouble()
-            val isAttachedToTop = mainRect.top < safeTopPx
-
-              for (rect in rects) {
-                val rectObj = JSONObject()
-                rectObj.put("x", rect.left / density)
-                rectObj.put("y", rect.top / density)
-                rectObj.put("width", rect.width() / density)
-                rectObj.put("height", rect.height() / density)
-                rectsArray.put(rectObj)
-              }
-
-          if (type == "Dot" || type == "Island") {
-            val safeInsetTopPx = displayCutout.safeInsetTop.toFloat()
-            val circle = extractCameraCircle(displayCutout, density, safeInsetTopPx)
-            if (circle != null) {
-              cameraCirclesArray.put(circle as Any)
-            } else {
-              for (rect in rects) {
-                val r = rect.width() / 2f
-                val cy = bestCy(
-                  rectCenterY    = rect.exactCenterY(),
-                  rectBottomY    = rect.bottom.toFloat(),
-                  rectHeightPx   = rect.height().toFloat(),
-                  rectWidthPx    = rect.width().toFloat(),
-                  r              = r,
-                  safeInsetTopPx = safeInsetTopPx,
-                )
-                val circleObj = JSONObject()
-                circleObj.put("cx", (rect.exactCenterX() / density).toDouble())
-                circleObj.put("cy", (cy / density).toDouble())
-                circleObj.put("r",  (r / density).toDouble())
-                cameraCirclesArray.put(circleObj as Any)
-              }
-            }
+        if (type == "Dot") {
+          val circles = extractDotCircles(displayCutout, rectsPx, density, safeInsetTopPx.toFloat())
+          for (i in 0 until circles.length()) {
+            circlesArray.put(circles.getJSONObject(i))
           }
         }
 
-        json.put("cutoutType", type)
-        json.put("cutoutRects", rectsArray)
-        json.put("cameraCircles", cameraCirclesArray)
-        json.put("safeAreaTop", safeAreaTopDp)
+        result.put("cutoutType", type)
+        result.put("cutoutRects", rectsArray)
+        result.put("cameraCircles", circlesArray)
+        result.put("safeAreaTop", safeInsetTopPx / density)
 
-        promise.resolve(json.toString())
+        promise.resolve(result.toString())
       } catch (e: Exception) {
         promise.reject("STATUS_EDGE_ERROR", e.message ?: "Unknown error", e)
       }
     }
   }
 
-  /**
-   * Uses the hidden getCutoutPath() method (API 31+, @hide) to obtain the
-   * precise geometric path of the physical camera hole.
-   *
-   * Walks the full class hierarchy so that OEM subclasses of DisplayCutout
-   * (e.g. Samsung) are also handled correctly.
-   *
-   * The derived circle uses [bestCy] to correct for Samsung's bottom-aligned
-   * safe-area circle, where the raw geometric centre sits lower than the
-   * physical camera lens.
-   */
-  private fun extractCameraCircle(
-    displayCutout: android.view.DisplayCutout,
+  private fun selectMainRect(rects: List<Rect>, safeInsetTopPx: Int): Rect {
+    val topAttached = rects.filter { it.top <= safeInsetTopPx }
+    return (if (topAttached.isNotEmpty()) topAttached else rects)
+      .maxByOrNull { it.width() * it.height() }!!
+  }
+
+  private fun classifyCutout(mainRect: Rect, safeInsetTopPx: Int, screenWidthPx: Int): String {
+    val widthRatio = mainRect.width().toFloat() / screenWidthPx.toFloat()
+    val attachedToTop = mainRect.top <= safeInsetTopPx
+    val aspectRatio = mainRect.width().toFloat() / mainRect.height().coerceAtLeast(1).toFloat()
+
+    return if (attachedToTop) {
+      if (widthRatio >= 0.22f) "Notch" else "WaterDrop"
+    } else {
+      if (widthRatio >= 0.18f || aspectRatio >= 2.2f) "Island" else "Dot"
+    }
+  }
+
+  private fun extractDotCircles(
+    displayCutout: DisplayCutout,
+    rects: List<Rect>,
     density: Float,
+    safeInsetTopPx: Float,
   ): JSONArray {
-    val result = JSONArray()
-    try {
-      // Use public API available since Android 12 (API 31)
-      val path = displayCutout.cutoutPath ?: return result
-      if (path.isEmpty) return result
+    val circles = JSONArray()
+    val contourBounds = getContourBounds(displayCutout.cutoutPath)
 
-      val bounds = RectF()
-      path.computeBounds(bounds, /* exact= */ true)
-      if (bounds.isEmpty) return null
+    rects.forEach { rect ->
+      val matchedContour = contourBounds
+        .filter { isRoundish(it) }
+        .maxByOrNull { intersectionScore(rect, it) }
 
-      // Use width/2 as radius — width equals the physical camera diameter on
-      // both circle-path (Pixel, Samsung API 31+) and column-path OEM variants.
-      val r = bounds.width() / 2f
-      val cy = bestCy(
-        rectCenterY    = bounds.centerY(),
-        rectBottomY    = bounds.bottom,
-        rectHeightPx   = bounds.height(),
-        rectWidthPx    = bounds.width(),
-        r              = r,
-        safeInsetTopPx = safeInsetTopPx,
-      )
+      if (matchedContour != null && intersectionScore(rect, matchedContour) > 0f) {
+        circles.put(contourToCircleJson(matchedContour, density, safeInsetTopPx))
+      } else {
+        circles.put(rectToCircleJson(rect, density, safeInsetTopPx))
+      }
+    }
 
-      val obj = JSONObject()
-      obj.put("cx", (bounds.centerX() / density).toDouble())
-      obj.put("cy", (cy / density).toDouble())
-      obj.put("r",  (r / density).toDouble())
-      result.put(obj)
-    } catch (_: Exception) {
-      null
+    return circles
+  }
+
+  private fun getContourBounds(path: Path?): List<RectF> {
+    if (path == null || path.isEmpty) return emptyList()
+
+    val bounds = mutableListOf<RectF>()
+    val measure = android.graphics.PathMeasure(path, false)
+
+    do {
+      val contourPath = Path()
+      if (measure.length > 0f) {
+        measure.getSegment(0f, measure.length, contourPath, true)
+        val rect = RectF()
+        contourPath.computeBounds(rect, true)
+        if (!rect.isEmpty) {
+          bounds.add(rect)
+        }
+      }
+    } while (measure.nextContour())
+
+    return bounds
+  }
+
+  private fun isRoundish(rect: RectF): Boolean {
+    val w = rect.width()
+    val h = rect.height().coerceAtLeast(1f)
+    val ratio = max(w, h) / min(w, h)
+    return ratio <= 1.6f
+  }
+
+  private fun intersectionScore(rect: Rect, contour: RectF): Float {
+    val left = max(rect.left.toFloat(), contour.left)
+    val top = max(rect.top.toFloat(), contour.top)
+    val right = min(rect.right.toFloat(), contour.right)
+    val bottom = min(rect.bottom.toFloat(), contour.bottom)
+
+    val iw = (right - left).coerceAtLeast(0f)
+    val ih = (bottom - top).coerceAtLeast(0f)
+    val inter = iw * ih
+    if (inter <= 0f) return 0f
+
+    val union = rect.width() * rect.height() + contour.width() * contour.height() - inter
+    return if (union <= 0f) 0f else inter / union
+  }
+
+  private fun contourToCircleJson(rect: RectF, density: Float, safeInsetTopPx: Float): JSONObject {
+    val diameter = (rect.width() + rect.height()) / 2f
+    val r = diameter / 2f
+    val cy = bestCy(
+      centerY = rect.centerY(),
+      bottomY = rect.bottom,
+      heightPx = rect.height(),
+      widthPx = rect.width(),
+      r = r,
+      safeInsetTopPx = safeInsetTopPx,
+    )
+
+    return JSONObject().apply {
+      put("cx", rect.centerX() / density)
+      put("cy", cy / density)
+      put("r", r / density)
+    }
+  }
+
+  private fun rectToCircleJson(rect: Rect, density: Float, safeInsetTopPx: Float): JSONObject {
+    val r = min(rect.width(), rect.height()) / 2f
+    val cy = bestCy(
+      centerY = rect.exactCenterY(),
+      bottomY = rect.bottom.toFloat(),
+      heightPx = rect.height().toFloat(),
+      widthPx = rect.width().toFloat(),
+      r = r,
+      safeInsetTopPx = safeInsetTopPx,
+    )
+
+    return JSONObject().apply {
+      put("cx", rect.exactCenterX() / density)
+      put("cy", cy / density)
+      put("r", r / density)
     }
   }
 
   /**
-   * Calculates the best-estimate camera circle centre Y (in pixels).
-   *
-   * Samsung One UI defines the safe-area path as a column or circle whose
-   * BOTTOM edge coincides with safeInsetTop (status-bar bottom), with no
-   * bottom padding.  The raw geometric centre of that shape sits lower than
-   * the physical camera lens.
-   *
-   * When the shape bottom is within 5 % of safeInsetTop we blend the raw
-   * centre with the status-bar midpoint (50/50), pulling the animation ring
-   * up to match the physical camera position on Samsung devices.
-   *
-   * For tall-column shapes (height > width × 1.2) the raw cy is already
-   * bottom − r (camera bottom − radius = camera centre), so no further
-   * blend is needed.
+   * Samsung and some OEMs define the safe area around punch-hole cameras using
+   * bottom-aligned paths. This nudges Y upward when the contour bottom almost
+   * matches safeInsetTop so the ring center aligns better with the physical lens.
    */
   private fun bestCy(
-    rectCenterY: Float,
-    rectBottomY: Float,
-    rectHeightPx: Float,
-    rectWidthPx: Float,
+    centerY: Float,
+    bottomY: Float,
+    heightPx: Float,
+    widthPx: Float,
     r: Float,
     safeInsetTopPx: Float,
   ): Float {
-    val isTallColumn = rectHeightPx > rectWidthPx * 1.2f
+    val tallColumn = heightPx > widthPx * 1.2f
+    val candidate = if (tallColumn) bottomY - r else centerY
 
-    val cyCandidatePx = if (isTallColumn) {
-      rectBottomY - r          // Samsung column: bottom edge = camera bottom
-    } else {
-      rectCenterY              // Circle/oval path: geometric centre
-    }
-
-    // Apply Samsung bottom-aligned circle correction.
-    if (!isTallColumn && safeInsetTopPx > 0f) {
-      val bottomGapFraction = (safeInsetTopPx - rectBottomY) / safeInsetTopPx
-      if (bottomGapFraction < 0.05f) {
-        // Circle bottom ≈ safeInsetTop → blend toward status-bar midpoint.
-        return (cyCandidatePx + safeInsetTopPx / 2f) / 2f
+    if (!tallColumn && safeInsetTopPx > 0f) {
+      val gapFraction = abs(safeInsetTopPx - bottomY) / safeInsetTopPx
+      if (gapFraction < 0.05f) {
+        return (candidate + safeInsetTopPx / 2f) / 2f
       }
     }
 
-    return cyCandidatePx
+    return candidate
   }
 
-  /**
-   * Walks the class hierarchy of [displayCutout] to locate and invoke the
-   * hidden getCutoutPath() method.  getDeclaredMethod() only searches the
-   * exact runtime class; on OEMs that subclass android.view.DisplayCutout the
-   * method is declared on the parent, so we must traverse up.
-   */
-  private fun findCutoutPath(displayCutout: android.view.DisplayCutout): Path? {
-    var cls: Class<*>? = displayCutout.javaClass
-    while (cls != null) {
-      try {
-        val m = cls.getDeclaredMethod("getCutoutPath")
-        m.isAccessible = true
-        return m.invoke(displayCutout) as? Path
-      } catch (_: NoSuchMethodException) {
-        cls = cls.superclass
-      } catch (_: Exception) {
-        break
-      }
-    }
-    return result
+  private fun rectToDpJson(rect: Rect, density: Float): JSONObject = JSONObject().apply {
+    put("x", rect.left / density)
+    put("y", rect.top / density)
+    put("width", rect.width() / density)
+    put("height", rect.height() / density)
   }
 
-  private fun buildDefaultJson(): JSONObject {
-    val json = JSONObject()
-    json.put("cutoutType", "None")
-    json.put("cutoutRects", JSONArray())
-    json.put("cameraCircles", JSONArray())
-    json.put("safeAreaTop", 0)
-    return json
+  private fun buildDefaultJson(): JSONObject = JSONObject().apply {
+    put("cutoutType", "None")
+    put("cutoutRects", JSONArray())
+    put("cameraCircles", JSONArray())
+    put("safeAreaTop", 0)
   }
 
   companion object {
