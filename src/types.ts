@@ -7,31 +7,47 @@ export interface CutoutRect {
   height: number;
 }
 
-/** Exact camera circle derived from DisplayCutout.getCutoutPath() on the native side. */
+/**
+ * Exact camera circle geometry derived from DisplayCutout.getCutoutPath()
+ * (Android 12 / API 31+) or from the bounding rect as a fallback.
+ * All values are in dp (density-independent pixels).
+ */
 export interface CameraCircle {
-  /** Center X in dp */
+  /** Horizontal centre of the camera hole, in dp from the left edge of the screen. */
   cx: number;
-  /** Center Y in dp */
+  /** Vertical centre of the camera hole, in dp from the top of the screen. */
   cy: number;
-  /** Radius in dp */
+  /** Radius of the camera hole in dp. */
   r: number;
 }
 
 export interface StatusEdgeData {
   cutoutType: CutoutType;
+  /** Bounding rectangles of all cutout areas (dp). */
   cutoutRects: CutoutRect[];
   /**
-   * Precise camera circle geometry extracted via getCutoutPath().computeBounds().
-   * Present for Dot and Island types when the hidden API is accessible (API 31+).
-   * Falls back to an empty array if reflection fails.
+   * Precise camera circle(s) in dp.
+   * Populated for Dot and Island cutout types.
+   * Source priority:
+   *   1. getCutoutPath().computeBounds() when the path is circular (AOSP / Pixel / OnePlus).
+   *   2. boundingRects geometry when the path is a safe-area slab (Samsung One UI).
    */
   cameraCircles: CameraCircle[];
+  /** Top safe-area inset in dp (height of the status bar / cutout region). */
   safeAreaTop: number;
   /**
-   * Optional SVG-like polyline path generated from DisplayCutout.getCutoutPath().
-   * Empty string when platform does not expose a cutout path.
+   * SVG-like polyline approximation of getCutoutPath() in physical pixels (px).
+   * Coordinates use Android screen space: origin at top-left, positive Y downward.
+   * Divide each coordinate by the screen pixel ratio to convert to dp.
+   * Empty string on devices without a cutout or below Android 12.
    */
   cutoutPathSvg?: string;
+  /**
+   * Bounding box of the full cutout path in dp.
+   * Useful as a lightweight alternative to parsing cutoutPathSvg.
+   * null when no cutout path is available.
+   */
+  cutoutPathBounds?: CutoutRect | null;
 }
 
 export interface StatusEdgeProps {
