@@ -27,6 +27,11 @@ export interface StatusEdgeData {
    */
   cameraCircles: CameraCircle[];
   safeAreaTop: number;
+  /**
+   * Optional SVG-like polyline path generated from DisplayCutout.getCutoutPath().
+   * Empty string when platform does not expose a cutout path.
+   */
+  cutoutPathSvg?: string;
 }
 
 export interface StatusEdgeProps {
