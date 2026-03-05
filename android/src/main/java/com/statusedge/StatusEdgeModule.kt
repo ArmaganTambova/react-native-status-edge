@@ -39,6 +39,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         var type = "None"
         var safeAreaTopDp = 0f
 
+        val density = reactApplicationContext.resources.displayMetrics.density
         val windowMetrics = activity.windowManager.currentWindowMetrics
         val screenWidthPx = windowMetrics.bounds.width()
 
@@ -64,9 +65,9 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
           activity.window.decorView.rootWindowInsets?.displayCutout
         }
 
-        if (displayCutout != null) {
-          safeAreaTopDp = displayCutout.safeInsetTop / density
-          val rects = displayCutout.boundingRects
+          if (displayCutout != null) {
+            safeAreaTopDp = displayCutout.safeInsetTop / density
+            val rects = displayCutout.boundingRects
 
           if (rects.isNotEmpty()) {
             // A cutout is "attached to the top" when its top edge sits inside the
@@ -92,14 +93,14 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
             val widthRatio = widthPx.toDouble() / screenWidthPx.toDouble()
             val isAttachedToTop = mainRect.top < safeTopPx
 
-            type = when {
-              isAttachedToTop && widthRatio > 0.35 -> "Notch"
-              isAttachedToTop && widthRatio > 0.15 -> "WaterDrop"
-              isAttachedToTop                       -> "Dot"
-              widthRatio > 0.35                     -> "Island"
-              else                                  -> "Dot"
-            }
-          }
+              for (rect in rects) {
+                val rectObj = JSONObject()
+                rectObj.put("x", rect.left / density)
+                rectObj.put("y", rect.top / density)
+                rectObj.put("width", rect.width() / density)
+                rectObj.put("height", rect.height() / density)
+                rectsArray.put(rectObj)
+              }
 
           if (type == "Dot" || type == "Island") {
             val safeInsetTopPx = displayCutout.safeInsetTop.toFloat()
@@ -153,11 +154,12 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   private fun extractCameraCircle(
     displayCutout: android.view.DisplayCutout,
     density: Float,
-    safeInsetTopPx: Float,
-  ): JSONObject? {
-    return try {
-      val path = findCutoutPath(displayCutout) ?: return null
-      if (path.isEmpty) return null
+  ): JSONArray {
+    val result = JSONArray()
+    try {
+      // Use public API available since Android 12 (API 31)
+      val path = displayCutout.cutoutPath ?: return result
+      if (path.isEmpty) return result
 
       val bounds = RectF()
       path.computeBounds(bounds, /* exact= */ true)
@@ -179,7 +181,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
       obj.put("cx", (bounds.centerX() / density).toDouble())
       obj.put("cy", (cy / density).toDouble())
       obj.put("r",  (r / density).toDouble())
-      obj
+      result.put(obj)
     } catch (_: Exception) {
       null
     }
@@ -248,7 +250,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         break
       }
     }
-    return null
+    return result
   }
 
   private fun buildDefaultJson(): JSONObject {
