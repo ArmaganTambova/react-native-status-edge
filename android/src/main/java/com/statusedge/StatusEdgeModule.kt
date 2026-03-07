@@ -99,7 +99,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
         if (type == "Dot" || type == "Island") {
           val circles = extractCameraCircles(
-            rectsPx, pathBounds, density, safeInsetTopPx.toFloat()
+            rectsPx, pathBounds, density, screenWidthPx
           )
           for (i in 0 until circles.length()) {
             circlesArray.put(circles.getJSONObject(i))
@@ -187,30 +187,78 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
    * Returns one {cx, cy, r} JSON object per physical camera hole (in dp).
    *
    * Priority:
-   * 1. getCutoutPath() returned a circular shape AND there is exactly one
-   *    bounding rect → path bounds ARE the camera circle. Sub-pixel accurate
-   *    on AOSP / Pixel / OnePlus and most standard OEMs.
-   * 2. Fallback (Samsung slab, multi-cutout, null path): one circle per
-   *    bounding rect. The bounding rect is always the physical camera area.
-   *    bestCy() corrects for OEM-specific vertical offsets.
+   * 1. getCutoutPath() returned a circular shape that overlaps with the bounding
+   *    rect in screen coordinates. AOSP transforms the path spec from center-top
+   *    coordinates to screen coordinates, but some OEMs skip this. We detect the
+   *    mismatch by comparing x-centers and correct or discard accordingly.
+   * 2. Fallback: one circle per bounding rect using direct center coordinates.
+   *    getBoundingRects() is always in screen coordinates and always represents
+   *    the physical camera area — the most reliable source of position data.
    */
   private fun extractCameraCircles(
     rects: List<Rect>,
     pathBounds: RectF?,
     density: Float,
-    safeInsetTopPx: Float,
+    screenWidthPx: Int,
   ): JSONArray {
     val circles = JSONArray()
 
-    // Path-first strategy: circular path + single cutout → use path bounds.
+    // Path-first: validate and optionally correct the path coordinate space,
+    // then use it when it genuinely represents a single circular cutout.
     if (pathBounds != null && isRoundish(pathBounds) && rects.size == 1) {
-      circles.put(boundsToCircleJson(pathBounds, density, safeInsetTopPx))
-      return circles
+      val validated = validatePathBounds(pathBounds, rects[0], screenWidthPx)
+      if (validated != null) {
+        circles.put(boundsToCircleJson(validated, density))
+        return circles
+      }
     }
 
-    // Rect fallback: one circle per bounding rect.
-    rects.forEach { circles.put(rectToCircleJson(it, density, safeInsetTopPx)) }
+    // Rect fallback: derive circle directly from each bounding rect's center.
+    // This is always correct since getBoundingRects() uses screen coordinates.
+    rects.forEach { circles.put(rectToCircleJson(it, density)) }
     return circles
+  }
+
+  /**
+   * Validates that the path bounding box is in the same coordinate space as
+   * the bounding rect, and corrects it if it's in center-top coordinates.
+   *
+   * AOSP's CutoutSpecification.Parser translates the path spec from center-top
+   * coordinates to screen coordinates by adding displayWidth/2 to all x values.
+   * Some OEMs skip this step. Detection: if |pathCenterX - rectCenterX| exceeds
+   * 15 % of screen width, the path has not been translated → apply the offset.
+   *
+   * After any correction a spatial overlap check provides a final sanity guard.
+   * Returns null when the path cannot be reconciled with the bounding rect.
+   */
+  private fun validatePathBounds(
+    pathBounds: RectF,
+    refRect: Rect,
+    screenWidthPx: Int,
+  ): RectF? {
+    val pathCx = pathBounds.centerX()
+    val rectCx = refRect.exactCenterX()
+    val xDelta = rectCx - pathCx
+
+    val corrected = if (abs(xDelta) > screenWidthPx * 0.15f) {
+      // Path appears to use center-top coordinates (x=0 at screen center).
+      // Translate so the path x-center matches the rect x-center.
+      RectF(
+        pathBounds.left  + xDelta,
+        pathBounds.top,
+        pathBounds.right + xDelta,
+        pathBounds.bottom,
+      )
+    } else {
+      pathBounds
+    }
+
+    // Spatial sanity: corrected path must overlap with the bounding rect.
+    val overlaps = corrected.left  < refRect.right  &&
+                   corrected.right  > refRect.left   &&
+                   corrected.top    < refRect.bottom  &&
+                   corrected.bottom > refRect.top
+    return if (overlaps) corrected else null
   }
 
   // ---------------------------------------------------------------------------
@@ -262,78 +310,41 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   // ---------------------------------------------------------------------------
 
   /**
-   * Camera circle from the cutout path's bounding box.
-   * Uses (width + height) / 2 as the diameter to absorb minor asymmetry from
-   * the bezier-to-polyline approximation inside computeBounds().
+   * Camera circle from a validated/corrected path bounding box.
+   *
+   * Uses (width + height) / 4 as the radius (average of both semi-axes) to
+   * absorb minor asymmetry from the cubic-bezier → bounding-box conversion.
+   * The center is taken directly from the bounding box; no speculative
+   * corrections are applied — the path IS the physical camera outline when
+   * validation passes.
    */
-  private fun boundsToCircleJson(
-    bounds: RectF,
-    density: Float,
-    safeInsetTopPx: Float,
-  ): JSONObject {
-    val diameter = (bounds.width() + bounds.height()) / 2f
-    val r  = diameter / 2f
-    val cy = bestCy(bounds.centerY(), bounds.bottom, bounds.height(), bounds.width(), r, safeInsetTopPx)
+  private fun boundsToCircleJson(bounds: RectF, density: Float): JSONObject {
+    val r = (bounds.width() + bounds.height()) / 4f   // avg radius
     return JSONObject().apply {
       put("cx", (bounds.centerX() / density).toDouble())
-      put("cy", (cy / density).toDouble())
-      put("r",  (r  / density).toDouble())
-    }
-  }
-
-  /** Camera circle from a bounding rect. Radius = half the shorter side. */
-  private fun rectToCircleJson(
-    rect: Rect,
-    density: Float,
-    safeInsetTopPx: Float,
-  ): JSONObject {
-    val r  = min(rect.width(), rect.height()) / 2f
-    val cy = bestCy(
-      rect.exactCenterY(), rect.bottom.toFloat(),
-      rect.height().toFloat(), rect.width().toFloat(), r, safeInsetTopPx
-    )
-    return JSONObject().apply {
-      put("cx", (rect.exactCenterX() / density).toDouble())
-      put("cy", (cy / density).toDouble())
-      put("r",  (r  / density).toDouble())
+      put("cy", (bounds.centerY() / density).toDouble())
+      put("r",  (r                / density).toDouble())
     }
   }
 
   /**
-   * Best-estimate camera circle centre Y (pixels).
+   * Camera circle derived directly from a bounding rect center.
    *
-   * OEM corrections applied:
+   * getBoundingRects() returns the physical camera hole area in screen
+   * coordinates. The rect center IS the camera center; radius = half the
+   * shorter side (the rect may be slightly non-square on some OEMs due to
+   * safe-area padding on one axis).
    *
-   * A) Tall safe-area column — some OEMs (historically Samsung One UI < 6)
-   *    provide a column shape whose bottom = safeInsetTop and whose width equals
-   *    the camera diameter. The physical camera sits at the TOP of this column:
-   *      cy = column.bottom − r
-   *
-   * B) Bottom-aligned circle — some OEMs anchor a circular path/rect so its
-   *    bottom edge is flush with the status-bar bottom (gap < 5 % of
-   *    safeInsetTop). The true camera lens is physically slightly higher than
-   *    the geometric centre of that circle; blending 50/50 with the status-bar
-   *    midpoint corrects the offset:
-   *      cy = (geometricCentre + safeInsetTop/2) / 2
+   * No "smart" corrections are applied — the direct center is always more
+   * reliable than heuristic adjustments that assume specific OEM behavior.
    */
-  private fun bestCy(
-    centerY: Float,
-    bottomY: Float,
-    heightPx: Float,
-    widthPx: Float,
-    r: Float,
-    safeInsetTopPx: Float,
-  ): Float {
-    val tallColumn = heightPx > widthPx * 1.2f
-    val candidate  = if (tallColumn) bottomY - r else centerY
-
-    if (!tallColumn && safeInsetTopPx > 0f) {
-      val gapFraction = abs(safeInsetTopPx - bottomY) / safeInsetTopPx
-      if (gapFraction < 0.05f) {
-        return (candidate + safeInsetTopPx / 2f) / 2f
-      }
+  private fun rectToCircleJson(rect: Rect, density: Float): JSONObject {
+    val r = min(rect.width(), rect.height()) / 2f
+    return JSONObject().apply {
+      put("cx", (rect.exactCenterX() / density).toDouble())
+      put("cy", (rect.exactCenterY() / density).toDouble())
+      put("r",  (r                   / density).toDouble())
     }
-    return candidate
   }
 
   // ---------------------------------------------------------------------------
