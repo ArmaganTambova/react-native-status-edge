@@ -195,29 +195,33 @@ function checkBabelPlugin(root) {
 // ---------------------------------------------------------------------------
 
 function setEdgeToEdgeGradle(root) {
-  const gp = path.join(root, 'android', 'gradle.properties');
-  if (!u.fileExists(gp)) {
-    return { ok: false, reason: 'android/gradle.properties not found' };
+  try {
+    const gp = path.join(root, 'android', 'gradle.properties');
+    if (!u.fileExists(gp)) {
+      return { ok: false, reason: 'android/gradle.properties not found' };
+    }
+    let text = u.readText(gp) || '';
+    const line = 'edgeToEdgeEnabled=true';
+    const re = /^[ \t]*edgeToEdgeEnabled[ \t]*=.*$/m;
+    if (re.test(text)) {
+      const current = text.match(/^[ \t]*edgeToEdgeEnabled[ \t]*=[ \t]*(\S*)/m);
+      if (current && /^true$/i.test(current[1]))
+        return { ok: true, changed: false, file: gp };
+      text = text.replace(re, line);
+    } else {
+      if (text.length && !text.endsWith('\n')) text += '\n';
+      text +=
+        '\n# Added by react-native-status-edge: render the app edge-to-edge so the\n' +
+        '# glow overlay can draw over the status bar / camera cutout (otherwise the\n' +
+        '# animation is clipped on WaterDrop and other top cutouts).\n' +
+        line +
+        '\n';
+    }
+    u.writeText(gp, text);
+    return { ok: true, changed: true, file: gp };
+  } catch (e) {
+    return { ok: false, reason: (e && e.message) || 'write failed' };
   }
-  let text = u.readText(gp) || '';
-  const line = 'edgeToEdgeEnabled=true';
-  const re = /^[ \t]*edgeToEdgeEnabled[ \t]*=.*$/m;
-  if (re.test(text)) {
-    const current = text.match(/^[ \t]*edgeToEdgeEnabled[ \t]*=[ \t]*(\S*)/m);
-    if (current && /^true$/i.test(current[1]))
-      return { ok: true, changed: false, file: gp };
-    text = text.replace(re, line);
-  } else {
-    if (text.length && !text.endsWith('\n')) text += '\n';
-    text +=
-      '\n# Added by react-native-status-edge: render the app edge-to-edge so the\n' +
-      '# glow overlay can draw over the status bar / camera cutout (otherwise the\n' +
-      '# animation is clipped on WaterDrop and other top cutouts).\n' +
-      line +
-      '\n';
-  }
-  u.writeText(gp, text);
-  return { ok: true, changed: true, file: gp };
 }
 
 function printManualEdgeToEdge(root, isExpo) {
@@ -269,7 +273,26 @@ async function configureEdgeToEdge(root, interactive) {
   );
 
   if (!interactive) {
-    printManualEdgeToEdge(root, expo);
+    // Auto-run on install: apply it automatically (idempotent, no prompt).
+    if (hasAndroid) {
+      const r = setEdgeToEdgeGradle(root);
+      if (r.ok && r.changed) {
+        console.log(
+          '   ' +
+            c.green('✓ Enabled edgeToEdgeEnabled=true in gradle.properties')
+        );
+        console.log(
+          '   ' + c.dim('Rebuild the Android app for it to take effect.')
+        );
+      } else if (r.ok) {
+        console.log('   ' + c.green('✓ edgeToEdgeEnabled is already enabled.'));
+      } else {
+        console.log('   ' + c.yellow('Could not auto-configure: ' + r.reason));
+        printManualEdgeToEdge(root, expo);
+      }
+    } else {
+      printManualEdgeToEdge(root, expo);
+    }
     console.log('');
     return;
   }

@@ -45,20 +45,18 @@ npm install react-native-worklets
 > or `react-native-reanimated/plugin` for v3) to be the **last** entry in your
 > `babel.config.js`.
 
-### Setup wizard
+### Setup (runs automatically)
 
-After installing, run the setup wizard. It checks your peer dependencies and
-configures Android edge-to-edge (the transparent top area the overlay needs):
+When you install the package, a setup step runs **automatically** (via
+`postinstall`): it checks your peer dependencies and enables Android
+edge-to-edge (the transparent top area the overlay needs). You don't need to
+run any command.
 
-```sh
-npx react-native-status-edge setup
-```
-
-It will offer to **configure edge-to-edge automatically** or **show you the
-manual steps** — your choice. To only check dependencies:
+To re-run it manually (e.g. after adding native folders or on Expo prebuild):
 
 ```sh
-npx react-native-status-edge doctor
+npx react-native-status-edge setup    # interactive setup
+npx react-native-status-edge doctor   # just check peer dependencies
 ```
 
 ### iOS
