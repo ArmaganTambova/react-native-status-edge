@@ -138,9 +138,23 @@ export default function DebugScreen() {
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `isLoading` | `boolean` | `false` | Show/hide the comet animation |
+| `isLoading` | `boolean` | `false` | Show/hide the animation |
 | `color` | `string` | `'#00FF00'` | Color of the glow/comet (any CSS color) |
-| `strokeWidth` | `number` | `3` | Comet stroke thickness in dp |
+| `strokeWidth` | `number` | `3` | Comet/glow stroke thickness in dp |
+| `animation` | `AnimationStyle` | `'trace'` | Animation style (see below) |
+| `durationMs` | `number` | `2000` / `2600` | One full cycle in ms (travel / breathing-pulse) |
+
+### Animation styles
+
+Every style works on every cutout type (`Notch`, `WaterDrop`, `Dot`, `Island`, `None`).
+
+| `animation` | Behaviour |
+|-------------|-----------|
+| `trace` | The original per-cutout comet: a beam enters top-left, traces the cutout, exits top-right. **Default** — existing usage is unchanged. |
+| `clockwise` | The beam travels the top edge + cutout continuously, clockwise (Dot/Island orbit the shape). |
+| `counterclockwise` | Same path, reversed direction. |
+| `breathing` | No travel — the full screen border + cutout outline glow smoothly fade in and out. |
+| `pulse` | No travel — the full screen border + cutout outline emit a quick double "heartbeat" flash, then rest. |
 
 ### `useStatusEdge()`
 
@@ -156,6 +170,8 @@ interface StatusEdgeData {
   cameraCircles: Array<{ cx: number; cy: number; r: number }>;
   /** Top safe-area inset, in dp. */
   safeAreaTop: number;
+  /** Index into `cutoutRects` of the primary cutout (Notch/WaterDrop render around it). */
+  mainRectIndex?: number;
   /** SVG-like polyline of the cutout path, in physical px. Android only. */
   cutoutPathSvg?: string;
   /** Bounding box of the cutout path, in dp. Android only. */
@@ -164,7 +180,7 @@ interface StatusEdgeData {
 ```
 
 Exported types: `StatusEdgeData`, `CutoutType`, `CutoutRect`, `CameraCircle`,
-`StatusEdgeProps`. `src/types.ts` is the source of truth.
+`StatusEdgeProps`, `AnimationStyle`. `src/types.ts` is the source of truth.
 
 ### Cutout types
 
@@ -184,10 +200,15 @@ Exported types: `StatusEdgeData`, `CutoutType`, `CutoutRect`, `CameraCircle`,
    so the camera circle is taken from the **center** of that box. On iOS the
    device model identifier is mapped to a cutout type with approximate
    dimensions.
+   On iOS, every model from the iPhone 11 onward (through the iPhone 17 family,
+   16e and Air) is mapped to its cutout type and dimensions, with a safe-area
+   fallback for future devices.
 2. **Path construction** — A Skia path traces the cutout boundary; an EvenOdd
    clip keeps the glow outside the cutout interior.
-3. **Animation** — A Reanimated `withRepeat`/`withTiming` loop drives a
-   `start`/`end` offset along the path, layered with three `BlurMask` passes.
+3. **Animation** — Travelling styles (`trace`/`clockwise`/`counterclockwise`)
+   drive a `start`/`end` offset along the path; `breathing`/`pulse` animate the
+   opacity of the full screen-border + cutout outline. All are layered with three
+   `BlurMask` passes.
 
 ## Known limitations
 

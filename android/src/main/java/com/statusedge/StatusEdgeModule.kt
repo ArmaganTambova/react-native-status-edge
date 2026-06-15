@@ -95,8 +95,9 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
 
         rectsPx.forEach { rectsArray.put(rectToDpJson(it, density)) }
 
-        val mainRect = selectMainRect(rectsPx, safeInsetTopPx)
-        val type     = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx, pathBounds)
+        val mainIndex = selectMainRectIndex(rectsPx, safeInsetTopPx)
+        val mainRect  = rectsPx[mainIndex]
+        val type      = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx, pathBounds)
 
         if (type == "Dot" || type == "Island") {
           val circles = extractCameraCircles(
@@ -110,6 +111,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         result.put("cutoutType",      type)
         result.put("cutoutRects",     rectsArray)
         result.put("cameraCircles",   circlesArray)
+        result.put("mainRectIndex",   mainIndex)
         result.put("safeAreaTop",     safeInsetTopPx / density)
         result.put("cutoutPathSvg",   buildPathSvg(cutoutPath))
         result.put("cutoutPathBounds", pathBounds?.let { boundsToJson(it, density) })
@@ -125,10 +127,17 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   // Cutout selection & classification
   // ---------------------------------------------------------------------------
 
-  private fun selectMainRect(rects: List<Rect>, safeInsetTopPx: Int): Rect {
-    val topAttached = rects.filter { it.top <= safeInsetTopPx }
-    return (if (topAttached.isNotEmpty()) topAttached else rects)
-      .maxByOrNull { it.width() * it.height() }!!
+  /**
+   * Index of the primary cutout: the largest-area rect attached to the top edge
+   * (or the largest overall when none is top-attached). Returning the INDEX —
+   * rather than the rect — lets JS render Notch/WaterDrop around the exact rect
+   * classification used, instead of assuming it is cutoutRects[0] (the native
+   * boundingRects order is not guaranteed to put the main cutout first).
+   */
+  private fun selectMainRectIndex(rects: List<Rect>, safeInsetTopPx: Int): Int {
+    val topAttached = rects.indices.filter { rects[it].top <= safeInsetTopPx }
+    val pool = if (topAttached.isNotEmpty()) topAttached else rects.indices.toList()
+    return pool.maxByOrNull { rects[it].width().toLong() * rects[it].height() }!!
   }
 
   /**
@@ -297,11 +306,19 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
     if (pts.isEmpty()) return ""
     val sb = StringBuilder()
     var first = true
+    // Path.approximate returns [fraction, x, y, ...] with the fraction monotonic
+    // over the WHOLE path (it never resets between contours). At a contour
+    // boundary two consecutive samples share the same fraction, so emit a fresh
+    // "M" subpath there instead of an "L" — otherwise a multi-cutout path (e.g.
+    // dual front cameras) draws a stray bridge line between the two shapes.
     for (i in pts.indices step 3) {
       val x = pts[i + 1]
       val y = pts[i + 2]
-      if (first) { sb.append("M ").append(x).append(' ').append(y); first = false }
-      else        sb.append(" L ").append(x).append(' ').append(y)
+      when {
+        first -> { sb.append("M ").append(x).append(' ').append(y); first = false }
+        i >= 3 && pts[i] == pts[i - 3] -> sb.append(" M ").append(x).append(' ').append(y)
+        else -> sb.append(" L ").append(x).append(' ').append(y)
+      }
     }
     return sb.toString()
   }

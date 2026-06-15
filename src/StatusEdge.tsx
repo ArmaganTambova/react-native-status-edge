@@ -7,250 +7,259 @@ import {
   BlurMask,
   Group,
   FillType,
+  type SkPath,
 } from '@shopify/react-native-skia';
 import {
   useSharedValue,
   withRepeat,
   withTiming,
+  withSequence,
   useDerivedValue,
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
 import { useStatusEdge } from './useStatusEdge';
+import { buildPaths, type PathCommand } from './cutoutPaths';
+import { computeSegments, COMET_LENGTH } from './comet';
 import type { StatusEdgeProps } from './types';
 
 const GLOW_SPREAD = 18;
+const DEFAULT_TRAVEL_MS = 2000;
+const DEFAULT_PULSE_MS = 2600;
+
+function makePath(commands: PathCommand[], evenOdd = false): SkPath {
+  const path = Skia.Path.Make();
+  for (const c of commands) {
+    switch (c.op) {
+      case 'move':
+        path.moveTo(c.x, c.y);
+        break;
+      case 'line':
+        path.lineTo(c.x, c.y);
+        break;
+      case 'quad':
+        path.quadTo(c.cx, c.cy, c.x, c.y);
+        break;
+      case 'arc':
+        path.arcToOval(
+          Skia.XYWHRect(c.oval.x, c.oval.y, c.oval.width, c.oval.height),
+          c.start,
+          c.sweep,
+          false
+        );
+        break;
+      case 'oval':
+        path.addOval(
+          Skia.XYWHRect(c.oval.x, c.oval.y, c.oval.width, c.oval.height)
+        );
+        break;
+      case 'rrect':
+        path.addRRect(
+          Skia.RRectXY(
+            Skia.XYWHRect(c.oval.x, c.oval.y, c.oval.width, c.oval.height),
+            c.rx,
+            c.ry
+          )
+        );
+        break;
+      case 'rect':
+        path.addRect(
+          Skia.XYWHRect(c.oval.x, c.oval.y, c.oval.width, c.oval.height)
+        );
+        break;
+      case 'close':
+        path.close();
+        break;
+    }
+  }
+  if (evenOdd) path.setFillType(FillType.EvenOdd);
+  return path;
+}
 
 export default function StatusEdge({
   isLoading = false,
   color = '#00FF00',
   strokeWidth = 3,
+  animation = 'trace',
+  durationMs,
 }: StatusEdgeProps) {
   const data = useStatusEdge();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const progress = useSharedValue(0);
 
-  // Comet length as a fraction of the total path length
-  const length = 0.3;
-  const totalDuration = 2000;
+  const progress = useSharedValue(0); // comet driver (0→1)
+  const glow = useSharedValue(0); // breathing/pulse intensity (0→1)
+
+  const cutoutType = data?.cutoutType ?? 'None';
+  const isPulse = animation === 'breathing' || animation === 'pulse';
+  const isClosed = cutoutType === 'Dot' || cutoutType === 'Island';
+  const isOrbit =
+    isClosed && (animation === 'clockwise' || animation === 'counterclockwise');
+  // `trace` and `clockwise` travel the path's natural direction; only
+  // `counterclockwise` reverses it.
+  const forward = animation !== 'counterclockwise';
+  const duration =
+    durationMs ?? (isPulse ? DEFAULT_PULSE_MS : DEFAULT_TRAVEL_MS);
 
   useEffect(() => {
-    if (isLoading) {
-      // Animate from 0 to 1+length so the tail fully exits before reset
+    cancelAnimation(progress);
+    cancelAnimation(glow);
+    if (!isLoading) {
+      progress.value = 0;
+      glow.value = 0;
+      return;
+    }
+
+    if (isPulse) {
+      progress.value = 0;
+      glow.value = 0;
+      if (animation === 'breathing') {
+        // Smooth, even in/out fade.
+        glow.value = withRepeat(
+          withTiming(1, {
+            duration: duration / 2,
+            easing: Easing.inOut(Easing.ease),
+          }),
+          -1,
+          true
+        );
+      } else {
+        // Heartbeat: a fixed ~600ms lub-dub, then an idle rest that fills the
+        // remainder of `duration`. The beat keeps a constant, recognisable
+        // shape, so `durationMs` only stretches the rest — the cycle never
+        // drops below ~800ms even for smaller `durationMs`.
+        const rest = Math.max(200, duration - 600);
+        glow.value = withRepeat(
+          withSequence(
+            withTiming(1, { duration: 110, easing: Easing.out(Easing.quad) }),
+            withTiming(0.18, { duration: 150, easing: Easing.in(Easing.quad) }),
+            withTiming(0.85, {
+              duration: 110,
+              easing: Easing.out(Easing.quad),
+            }),
+            withTiming(0, { duration: 230, easing: Easing.in(Easing.quad) }),
+            withTiming(0, { duration: rest })
+          ),
+          -1,
+          false
+        );
+      }
+    } else {
+      glow.value = 0;
       progress.value = withRepeat(
-        withTiming(1 + length, {
-          duration: totalDuration,
-          easing: Easing.linear,
-        }),
+        withTiming(1, { duration, easing: Easing.linear }),
         -1,
         false
       );
-    } else {
-      cancelAnimation(progress);
-      progress.value = 0;
     }
-  }, [isLoading, length, totalDuration, progress]);
+  }, [isLoading, isPulse, animation, duration, progress, glow]);
 
-  const start = useDerivedValue(() => {
-    const val = progress.value - length;
-    return Math.max(0, Math.min(1, val));
-  });
-
-  const end = useDerivedValue(() => {
-    return Math.min(1, Math.max(0, progress.value));
-  });
+  const seg = useDerivedValue(
+    () => computeSegments(progress.value, isOrbit, forward, COMET_LENGTH),
+    [isOrbit, forward]
+  );
+  const aStart = useDerivedValue(() => seg.value.aStart);
+  const aEnd = useDerivedValue(() => seg.value.aEnd);
+  const bStart = useDerivedValue(() => seg.value.bStart);
+  const bEnd = useDerivedValue(() => seg.value.bEnd);
 
   if (!data) return null;
   if (!isLoading) return null;
 
-  const { cutoutType, cutoutRects, safeAreaTop } = data;
+  const built = buildPaths({
+    cutoutType,
+    cutoutRects: data.cutoutRects,
+    cameraCircles: data.cameraCircles ?? [],
+    safeAreaTop: data.safeAreaTop,
+    mainRectIndex: data.mainRectIndex ?? 0,
+    screenWidth,
+    screenHeight,
+    strokeWidth,
+  });
 
-  // mainPath: the comet travel path for all cutout types
-  const mainPath = Skia.Path.Make();
-  // clipPath: EvenOdd mask to prevent glow from bleeding into the cutout interior.
-  // null for None (no cutout — canvas edge handles clipping naturally).
-  let clipPath: ReturnType<typeof Skia.Path.Make> | null = null;
+  // Three stacked glow layers: outer halo → mid → bright inner core.
+  const LAYERS = [
+    { width: GLOW_SPREAD, blur: GLOW_SPREAD, opacity: 0.2 },
+    { width: GLOW_SPREAD * 0.6, blur: GLOW_SPREAD * 0.5, opacity: 0.45 },
+    { width: GLOW_SPREAD * 0.25, blur: GLOW_SPREAD * 0.25, opacity: 0.7 },
+  ];
 
-  if (cutoutType === 'None') {
-    // Simple horizontal sweep across the top of the screen
-    mainPath.moveTo(0, strokeWidth / 2);
-    mainPath.lineTo(screenWidth, strokeWidth / 2);
-  } else if (cutoutType === 'Notch') {
-    const rect = cutoutRects[0];
-    if (rect) {
-      const r = 10;
-      const bottomY = rect.y + rect.height;
-
-      // Travel from left edge, dip around the notch, continue to right edge
-      mainPath.moveTo(0, strokeWidth / 2);
-      mainPath.lineTo(rect.x - r, strokeWidth / 2);
-      mainPath.quadTo(rect.x, strokeWidth / 2, rect.x, strokeWidth / 2 + r);
-      mainPath.lineTo(rect.x, bottomY - r);
-      mainPath.quadTo(rect.x, bottomY, rect.x + r, bottomY);
-      mainPath.lineTo(rect.x + rect.width - r, bottomY);
-      mainPath.quadTo(
-        rect.x + rect.width,
-        bottomY,
-        rect.x + rect.width,
-        bottomY - r
-      );
-      mainPath.lineTo(rect.x + rect.width, strokeWidth / 2 + r);
-      mainPath.quadTo(
-        rect.x + rect.width,
-        strokeWidth / 2,
-        rect.x + rect.width + r,
-        strokeWidth / 2
-      );
-      mainPath.lineTo(screenWidth, strokeWidth / 2);
-
-      // EvenOdd clip: screen rect XOR notch rect → glow only radiates outward
-      clipPath = Skia.Path.Make();
-      clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
-      clipPath.addRect(
-        Skia.XYWHRect(rect.x, 0, rect.width, rect.y + rect.height)
-      );
-      clipPath.setFillType(FillType.EvenOdd);
-    } else {
-      mainPath.moveTo(0, strokeWidth / 2);
-      mainPath.lineTo(screenWidth, strokeWidth / 2);
-    }
-  } else if (cutoutType === 'WaterDrop') {
-    const rect = cutoutRects[0];
-    if (rect && rect.y <= safeAreaTop * 0.5) {
-      // Waterdrop attached to the top edge:
-      // Travel from left → down the left side → around the semicircular bottom → up the right side → right edge
-      const padding = 6;
-      const inflatedW = rect.width + padding * 2;
-      const leftX = rect.x - padding;
-      const rightX = rect.x + rect.width + padding;
-      const bottomY = rect.y + rect.height + padding;
-      const arcRadius = inflatedW / 2;
-      const arcCenterY = bottomY - arcRadius;
-      const oval = Skia.XYWHRect(
-        leftX,
-        arcCenterY - arcRadius,
-        inflatedW,
-        inflatedW
-      );
-
-      mainPath.moveTo(0, strokeWidth / 2);
-      mainPath.lineTo(leftX, strokeWidth / 2);
-      mainPath.lineTo(leftX, Math.max(strokeWidth / 2, arcCenterY));
-      // Arc from left (180°) sweeping 180° clockwise → arrives at right (0°)
-      mainPath.arcToOval(oval, 180, 180, false);
-      mainPath.lineTo(rightX, strokeWidth / 2);
-      mainPath.lineTo(screenWidth, strokeWidth / 2);
-
-      // EvenOdd clip: screen rect XOR waterdrop interior → glow only radiates outward
-      const dropInterior = Skia.Path.Make();
-      dropInterior.moveTo(leftX, 0);
-      dropInterior.lineTo(leftX, arcCenterY);
-      dropInterior.arcToOval(oval, 180, 180, false);
-      dropInterior.lineTo(rightX, 0);
-      dropInterior.close();
-
-      clipPath = Skia.Path.Make();
-      clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
-      clipPath.addPath(dropInterior);
-      clipPath.setFillType(FillType.EvenOdd);
-    } else {
-      // Non-top waterdrop or no rect — fall back to simple horizontal sweep
-      mainPath.moveTo(0, strokeWidth / 2);
-      mainPath.lineTo(screenWidth, strokeWidth / 2);
-    }
-  } else if (cutoutType === 'Dot' || cutoutType === 'Island') {
-    // Dot / Island: orbit path sits exactly on the cutout boundary.
-    // Clip path (EvenOdd) ensures glow radiates outward only.
-    clipPath = Skia.Path.Make();
-    clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
-
-    const cameraCircles = data.cameraCircles ?? [];
-
-    cutoutRects.forEach((rect, idx) => {
-      if (cutoutType === 'Dot') {
-        // Use exact circle from native side (API 31+ getCutoutPath or native fallback).
-        // Since native side now guarantees to populate cameraCircles (either from path or math fallback),
-        // we can rely on it directly.
-        // Fallback to the first circle if index doesn't match (though arrays should be parallel).
-        const exact = cameraCircles[idx] ?? cameraCircles[0];
-
-        // Default to calculating from rect only if absolutely no cameraCircles data came back
-        // (e.g. older Android versions or bridge failure), though native changes make this rare.
-        const r = exact ? exact.r : Math.min(rect.width, rect.height) / 2;
-        const cx = exact ? exact.cx : rect.x + rect.width / 2;
-        const cy = exact ? exact.cy : rect.y + rect.height / 2;
-
-        const cameraOval = Skia.XYWHRect(cx - r, cy - r, r * 2, r * 2);
-
-        mainPath.addOval(cameraOval);
-        clipPath!.addOval(cameraOval);
-      } else {
-        // Island: pill-shaped floating cutout
-        const r = rect.height / 2;
-        mainPath.addRRect(
-          Skia.RRectXY(
-            Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
-            r,
-            r
-          )
-        );
-        clipPath!.addRRect(
-          Skia.RRectXY(
-            Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
-            r,
-            r
-          )
-        );
-      }
-    });
-
-    // EvenOdd: outer screen rect XOR inner cutout shapes → only exterior visible
-    clipPath.setFillType(FillType.EvenOdd);
+  if (isPulse) {
+    const outlinePath = makePath(built.outlineCommands);
+    const clipPath = built.outlineClipCommands
+      ? makePath(built.outlineClipCommands, true)
+      : undefined;
+    return (
+      <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+        <Group clip={clipPath} opacity={glow}>
+          {LAYERS.map((l, i) => (
+            <Path
+              key={i}
+              path={outlinePath}
+              style="stroke"
+              strokeWidth={l.width}
+              color={color}
+              strokeCap="round"
+              strokeJoin="round"
+              opacity={l.opacity}
+            >
+              <BlurMask blur={l.blur} style="normal" />
+            </Path>
+          ))}
+        </Group>
+      </Canvas>
+    );
   }
+
+  const clipPath = built.clipCommands
+    ? makePath(built.clipCommands, true)
+    : undefined;
+  // Closed orbits get one path per shape so Skia's per-path trim orbits each
+  // cutout independently (a single combined path would trim across the
+  // concatenated contours and tear the comet between shapes). Open sweeps use
+  // a single path.
+  const cometPaths = isOrbit
+    ? built.cometCommands.map((cmd) => makePath([cmd]))
+    : [makePath(built.cometCommands)];
 
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-      {/* All types share the same 3-layer outward glow beam */}
-      <Group clip={clipPath ?? undefined}>
-        {/* Outer halo – widest, softest */}
-        <Path
-          path={mainPath}
-          style="stroke"
-          strokeWidth={GLOW_SPREAD}
-          color={color}
-          start={start}
-          end={end}
-          strokeCap="round"
-          opacity={0.2}
-        >
-          <BlurMask blur={GLOW_SPREAD} style="normal" />
-        </Path>
-        {/* Mid glow */}
-        <Path
-          path={mainPath}
-          style="stroke"
-          strokeWidth={GLOW_SPREAD * 0.6}
-          color={color}
-          start={start}
-          end={end}
-          strokeCap="round"
-          opacity={0.45}
-        >
-          <BlurMask blur={GLOW_SPREAD * 0.5} style="normal" />
-        </Path>
-        {/* Inner glow – brightest, closest to boundary */}
-        <Path
-          path={mainPath}
-          style="stroke"
-          strokeWidth={GLOW_SPREAD * 0.25}
-          color={color}
-          start={start}
-          end={end}
-          strokeCap="round"
-          opacity={0.7}
-        >
-          <BlurMask blur={GLOW_SPREAD * 0.25} style="normal" />
-        </Path>
+      <Group clip={clipPath}>
+        {cometPaths.map((cometPath, pi) => (
+          <Group key={pi}>
+            {LAYERS.map((l, i) => (
+              <Path
+                key={`a${i}`}
+                path={cometPath}
+                style="stroke"
+                strokeWidth={l.width}
+                color={color}
+                start={aStart}
+                end={aEnd}
+                strokeCap="round"
+                opacity={l.opacity}
+              >
+                <BlurMask blur={l.blur} style="normal" />
+              </Path>
+            ))}
+            {/* Second segment carries the wrapped portion of a seamless orbit. */}
+            {isOrbit &&
+              LAYERS.map((l, i) => (
+                <Path
+                  key={`b${i}`}
+                  path={cometPath}
+                  style="stroke"
+                  strokeWidth={l.width}
+                  color={color}
+                  start={bStart}
+                  end={bEnd}
+                  strokeCap="round"
+                  opacity={l.opacity}
+                >
+                  <BlurMask blur={l.blur} style="normal" />
+                </Path>
+              ))}
+          </Group>
+        ))}
       </Group>
     </Canvas>
   );

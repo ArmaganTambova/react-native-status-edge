@@ -10309,10 +10309,11 @@ __metadata:
     turbo: "npm:^2.5.6"
     typescript: "npm:^5.9.2"
   peerDependencies:
-    "@shopify/react-native-skia": ">=0.1.200"
+    "@shopify/react-native-skia": ">=2.0.0"
     react: "*"
     react-native: "*"
     react-native-reanimated: ">=3.0.0"
+    react-native-worklets: ">=0.5.0"
   peerDependenciesMeta:
     "@shopify/react-native-skia":
       optional: false
@@ -10322,6 +10323,10 @@ __metadata:
       optional: false
     react-native-reanimated:
       optional: false
+    react-native-worklets:
+      optional: true
+  bin:
+    react-native-status-edge: ./scripts/cli.js
   languageName: unknown
   linkType: soft
 
