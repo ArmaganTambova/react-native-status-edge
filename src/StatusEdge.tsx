@@ -6,6 +6,7 @@ import {
   Skia,
   BlurMask,
   Group,
+  FillType,
 } from '@shopify/react-native-skia';
 import {
   useSharedValue,
@@ -13,7 +14,7 @@ import {
   withTiming,
   useDerivedValue,
   Easing,
-  cancelAnimation
+  cancelAnimation,
 } from 'react-native-reanimated';
 import { useStatusEdge } from './useStatusEdge';
 import type { StatusEdgeProps } from './types';
@@ -37,7 +38,10 @@ export default function StatusEdge({
     if (isLoading) {
       // Animate from 0 to 1+length so the tail fully exits before reset
       progress.value = withRepeat(
-        withTiming(1 + length, { duration: totalDuration, easing: Easing.linear }),
+        withTiming(1 + length, {
+          duration: totalDuration,
+          easing: Easing.linear,
+        }),
         -1,
         false
       );
@@ -71,7 +75,6 @@ export default function StatusEdge({
     // Simple horizontal sweep across the top of the screen
     mainPath.moveTo(0, strokeWidth / 2);
     mainPath.lineTo(screenWidth, strokeWidth / 2);
-
   } else if (cutoutType === 'Notch') {
     const rect = cutoutRects[0];
     if (rect) {
@@ -85,21 +88,32 @@ export default function StatusEdge({
       mainPath.lineTo(rect.x, bottomY - r);
       mainPath.quadTo(rect.x, bottomY, rect.x + r, bottomY);
       mainPath.lineTo(rect.x + rect.width - r, bottomY);
-      mainPath.quadTo(rect.x + rect.width, bottomY, rect.x + rect.width, bottomY - r);
+      mainPath.quadTo(
+        rect.x + rect.width,
+        bottomY,
+        rect.x + rect.width,
+        bottomY - r
+      );
       mainPath.lineTo(rect.x + rect.width, strokeWidth / 2 + r);
-      mainPath.quadTo(rect.x + rect.width, strokeWidth / 2, rect.x + rect.width + r, strokeWidth / 2);
+      mainPath.quadTo(
+        rect.x + rect.width,
+        strokeWidth / 2,
+        rect.x + rect.width + r,
+        strokeWidth / 2
+      );
       mainPath.lineTo(screenWidth, strokeWidth / 2);
 
       // EvenOdd clip: screen rect XOR notch rect → glow only radiates outward
       clipPath = Skia.Path.Make();
       clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
-      clipPath.addRect(Skia.XYWHRect(rect.x, 0, rect.width, rect.y + rect.height));
-      clipPath.setFillType(1);
+      clipPath.addRect(
+        Skia.XYWHRect(rect.x, 0, rect.width, rect.y + rect.height)
+      );
+      clipPath.setFillType(FillType.EvenOdd);
     } else {
       mainPath.moveTo(0, strokeWidth / 2);
       mainPath.lineTo(screenWidth, strokeWidth / 2);
     }
-
   } else if (cutoutType === 'WaterDrop') {
     const rect = cutoutRects[0];
     if (rect && rect.y <= safeAreaTop * 0.5) {
@@ -112,7 +126,12 @@ export default function StatusEdge({
       const bottomY = rect.y + rect.height + padding;
       const arcRadius = inflatedW / 2;
       const arcCenterY = bottomY - arcRadius;
-      const oval = Skia.XYWHRect(leftX, arcCenterY - arcRadius, inflatedW, inflatedW);
+      const oval = Skia.XYWHRect(
+        leftX,
+        arcCenterY - arcRadius,
+        inflatedW,
+        inflatedW
+      );
 
       mainPath.moveTo(0, strokeWidth / 2);
       mainPath.lineTo(leftX, strokeWidth / 2);
@@ -133,20 +152,19 @@ export default function StatusEdge({
       clipPath = Skia.Path.Make();
       clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
       clipPath.addPath(dropInterior);
-      clipPath.setFillType(1);
+      clipPath.setFillType(FillType.EvenOdd);
     } else {
       // Non-top waterdrop or no rect — fall back to simple horizontal sweep
       mainPath.moveTo(0, strokeWidth / 2);
       mainPath.lineTo(screenWidth, strokeWidth / 2);
     }
-
   } else if (cutoutType === 'Dot' || cutoutType === 'Island') {
     // Dot / Island: orbit path sits exactly on the cutout boundary.
     // Clip path (EvenOdd) ensures glow radiates outward only.
     clipPath = Skia.Path.Make();
     clipPath.addRect(Skia.XYWHRect(0, 0, screenWidth, screenHeight));
 
-    const cameraCircles = data?.cameraCircles ?? [];
+    const cameraCircles = data.cameraCircles ?? [];
 
     cutoutRects.forEach((rect, idx) => {
       if (cutoutType === 'Dot') {
@@ -158,7 +176,7 @@ export default function StatusEdge({
 
         // Default to calculating from rect only if absolutely no cameraCircles data came back
         // (e.g. older Android versions or bridge failure), though native changes make this rare.
-        const r  = exact ? exact.r  : Math.min(rect.width, rect.height) / 2;
+        const r = exact ? exact.r : Math.min(rect.width, rect.height) / 2;
         const cx = exact ? exact.cx : rect.x + rect.width / 2;
         const cy = exact ? exact.cy : rect.y + rect.height / 2;
 
@@ -169,19 +187,25 @@ export default function StatusEdge({
       } else {
         // Island: pill-shaped floating cutout
         const r = rect.height / 2;
-        mainPath.addRRect(Skia.RRectXY(
-          Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
-          r, r
-        ));
-        clipPath!.addRRect(Skia.RRectXY(
-          Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
-          r, r
-        ));
+        mainPath.addRRect(
+          Skia.RRectXY(
+            Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+            r,
+            r
+          )
+        );
+        clipPath!.addRRect(
+          Skia.RRectXY(
+            Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height),
+            r,
+            r
+          )
+        );
       }
     });
 
     // EvenOdd: outer screen rect XOR inner cutout shapes → only exterior visible
-    clipPath.setFillType(1);
+    clipPath.setFillType(FillType.EvenOdd);
   }
 
   return (

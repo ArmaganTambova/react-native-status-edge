@@ -10,7 +10,6 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.UiThreadUtil
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -46,11 +45,13 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         // multi-display and accessibility display-size scaling. Below API 34 we
         // fall back to the activity's display metrics (activity is a UiContext).
         @Suppress("DEPRECATION")
-        val density = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val rawDensity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
           windowMetrics.density
         } else {
           activity.resources.displayMetrics.density
         }
+        // Guard against a 0 / NaN density yielding NaN coordinates (JSONException).
+        val density = if (rawDensity.isFinite() && rawDensity > 0f) rawDensity else 1f
 
         // WindowMetrics.getWindowInsets() (API 30+) does not require view attachment
         // and always reflects the current window state — preferred over
@@ -98,9 +99,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         val type     = classifyCutout(mainRect, safeInsetTopPx, screenWidthPx, pathBounds)
 
         if (type == "Dot" || type == "Island") {
-          val circles = extractCameraCircles(
-            rectsPx, pathBounds, density, safeInsetTopPx.toFloat()
-          )
+          val circles = extractCameraCircles(rectsPx, pathBounds, density)
           for (i in 0 until circles.length()) {
             circlesArray.put(circles.getJSONObject(i))
           }
@@ -186,30 +185,25 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   /**
    * Returns one {cx, cy, r} JSON object per physical camera hole (in dp).
    *
-   * Priority:
-   * 1. getCutoutPath() returned a circular shape AND there is exactly one
-   *    bounding rect → path bounds ARE the camera circle. Sub-pixel accurate
-   *    on AOSP / Pixel / OnePlus and most standard OEMs.
-   * 2. Fallback (Samsung slab, multi-cutout, null path): one circle per
-   *    bounding rect. The bounding rect is always the physical camera area.
-   *    bestCy() corrects for OEM-specific vertical offsets.
+   * The camera circle is the CENTRE of the cutout's bounding box (see
+   * circleFromBounds). On a single cutout we prefer the precise path bounds
+   * (sub-pixel cx / width); otherwise we emit one circle per bounding rect.
    */
   private fun extractCameraCircles(
     rects: List<Rect>,
     pathBounds: RectF?,
     density: Float,
-    safeInsetTopPx: Float,
   ): JSONArray {
     val circles = JSONArray()
 
-    // Path-first strategy: circular path + single cutout → use path bounds.
-    if (pathBounds != null && isRoundish(pathBounds) && rects.size == 1) {
-      circles.put(boundsToCircleJson(pathBounds, density, safeInsetTopPx))
+    // Single cutout with a usable path → use the precise path bounds.
+    if (pathBounds != null && rects.size == 1) {
+      circles.put(circleFromBounds(pathBounds, density))
       return circles
     }
 
-    // Rect fallback: one circle per bounding rect.
-    rects.forEach { circles.put(rectToCircleJson(it, density, safeInsetTopPx)) }
+    // Otherwise one circle per bounding rect.
+    rects.forEach { circles.put(circleFromBounds(RectF(it), density)) }
     return circles
   }
 
@@ -258,82 +252,39 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   }
 
   // ---------------------------------------------------------------------------
-  // Circle helpers
+  // Circle helper
   // ---------------------------------------------------------------------------
 
   /**
-   * Camera circle from the cutout path's bounding box.
-   * Uses (width + height) / 2 as the diameter to absorb minor asymmetry from
-   * the bezier-to-polyline approximation inside computeBounds().
+   * Camera circle from the cutout's bounding box: centre = box centre,
+   * radius = half the SHORTER side.
+   *
+   * Samsung One UI reports a center punch-hole not as the bare circle but as a
+   * vertical SAFE-AREA STRIPE the width of the camera hole, spanning from the
+   * top of the screen (y = 0) down to safeInsetTop. Android does NOT encode
+   * where the lens sits inside that stripe — the cutout path is a featureless
+   * rectangle (verified on a real Samsung device: ~18.7×34.1 dp from y=0, no
+   * arc) — so neither the top nor the bottom edge is the lens. Empirically the
+   * lens is mid-stripe, so the geometric CENTRE is the best estimate
+   * (top-anchoring rendered ~8 dp too high, bottom-anchoring ~8 dp too low).
+   *
+   * For AOSP / Pixel / OnePlus the bounding box IS the real circle, so the
+   * centre and half-width are exact (a no-op vs the old behaviour).
+   *
+   * radius uses min(width, height): width is the uncontaminated lens-diameter
+   * axis — the Samsung stripe inflates only the height.
+   *
+   *   r  = min(width, height) / 2
+   *   cx = bounds.centerX
+   *   cy = bounds.centerY
    */
-  private fun boundsToCircleJson(
-    bounds: RectF,
-    density: Float,
-    safeInsetTopPx: Float,
-  ): JSONObject {
-    val diameter = (bounds.width() + bounds.height()) / 2f
-    val r  = diameter / 2f
-    val cy = bestCy(bounds.centerY(), bounds.bottom, bounds.height(), bounds.width(), r, safeInsetTopPx)
+  private fun circleFromBounds(bounds: RectF, density: Float): JSONObject {
+    val r = min(bounds.width(), bounds.height()) / 2f
     return JSONObject().apply {
       put("cx", (bounds.centerX() / density).toDouble())
-      put("cy", (cy / density).toDouble())
-      put("r",  (r  / density).toDouble())
+      put("cy", (bounds.centerY() / density).toDouble())
+      put("r",  (r                / density).toDouble())
     }
-  }
-
-  /** Camera circle from a bounding rect. Radius = half the shorter side. */
-  private fun rectToCircleJson(
-    rect: Rect,
-    density: Float,
-    safeInsetTopPx: Float,
-  ): JSONObject {
-    val r  = min(rect.width(), rect.height()) / 2f
-    val cy = bestCy(
-      rect.exactCenterY(), rect.bottom.toFloat(),
-      rect.height().toFloat(), rect.width().toFloat(), r, safeInsetTopPx
-    )
-    return JSONObject().apply {
-      put("cx", (rect.exactCenterX() / density).toDouble())
-      put("cy", (cy / density).toDouble())
-      put("r",  (r  / density).toDouble())
-    }
-  }
-
-  /**
-   * Best-estimate camera circle centre Y (pixels).
-   *
-   * OEM corrections applied:
-   *
-   * A) Tall safe-area column — some OEMs (historically Samsung One UI < 6)
-   *    provide a column shape whose bottom = safeInsetTop and whose width equals
-   *    the camera diameter. The physical camera sits at the TOP of this column:
-   *      cy = column.bottom − r
-   *
-   * B) Bottom-aligned circle — some OEMs anchor a circular path/rect so its
-   *    bottom edge is flush with the status-bar bottom (gap < 5 % of
-   *    safeInsetTop). The true camera lens is physically slightly higher than
-   *    the geometric centre of that circle; blending 50/50 with the status-bar
-   *    midpoint corrects the offset:
-   *      cy = (geometricCentre + safeInsetTop/2) / 2
-   */
-  private fun bestCy(
-    centerY: Float,
-    bottomY: Float,
-    heightPx: Float,
-    widthPx: Float,
-    r: Float,
-    safeInsetTopPx: Float,
-  ): Float {
-    val tallColumn = heightPx > widthPx * 1.2f
-    val candidate  = if (tallColumn) bottomY - r else centerY
-
-    if (!tallColumn && safeInsetTopPx > 0f) {
-      val gapFraction = abs(safeInsetTopPx - bottomY) / safeInsetTopPx
-      if (gapFraction < 0.05f) {
-        return (candidate + safeInsetTopPx / 2f) / 2f
-      }
-    }
-    return candidate
   }
 
   // ---------------------------------------------------------------------------

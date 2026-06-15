@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NativeModules, Platform } from 'react-native';
+import { Dimensions, NativeModules, Platform } from 'react-native';
 import type { StatusEdgeData } from './types';
 
 const LINKING_ERROR =
@@ -8,8 +8,8 @@ const LINKING_ERROR =
   '- You rebuilt the app after installing the package\n' +
   '- You are not using Expo Go\n';
 
-// @ts-expect-error
-const isTurboModuleEnabled = global.__turboModuleProxy != null;
+const isTurboModuleEnabled =
+  (global as { __turboModuleProxy?: unknown }).__turboModuleProxy != null;
 
 const StatusEdgeModule = isTurboModuleEnabled
   ? require('./NativeStatusEdge').default
@@ -30,16 +30,32 @@ export function useStatusEdge(): StatusEdgeData | null {
   const [data, setData] = useState<StatusEdgeData | null>(null);
 
   useEffect(() => {
+    let mounted = true;
+
     async function load() {
       try {
         const json = await StatusEdge.getCutoutData();
-        const parsed = JSON.parse(json);
-        setData(parsed);
+        const parsed = JSON.parse(json) as StatusEdgeData;
+        if (mounted) setData(parsed);
       } catch (e) {
-        console.error('Failed to load status edge data', e);
+        if (__DEV__) {
+          console.warn(
+            'react-native-status-edge: failed to load cutout data',
+            e
+          );
+        }
       }
     }
+
     load();
+    // Cutout geometry depends on orientation / window size, so refetch when it
+    // changes — otherwise the overlay stays aligned to the original layout.
+    const subscription = Dimensions.addEventListener('change', load);
+
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
   }, []);
 
   return data;

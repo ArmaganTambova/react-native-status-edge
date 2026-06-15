@@ -60,6 +60,10 @@ RCT_EXPORT_MODULE()
                 if ([model isEqualToString:@"iPhone12,8"] || [model isEqualToString:@"iPhone14,6"]) {
                     type = @"None";
                 }
+                // iPhone 16e (iPhone17,5) has a notch, not a Dynamic Island.
+                else if ([model isEqualToString:@"iPhone17,5"]) {
+                    type = @"Notch";
+                }
                 // Check for Dynamic Island
                 // iPhone 14 Pro (15,2), 14 Pro Max (15,3)
                 // iPhone 15 series (15,x), 16 series (16,x)
@@ -119,10 +123,13 @@ RCT_EXPORT_MODULE()
             @"safeAreaTop": @(safeTop)
         };
 
-        NSError *error;
+        NSError *error = nil;
         NSData *jsonData = [NSJSONSerialization dataWithJSONObject:result options:0 error:&error];
+        if (!jsonData) {
+            reject(@"STATUS_EDGE_ERROR", error.localizedDescription ?: @"Failed to serialize cutout data", error);
+            return;
+        }
         NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-
         resolve(jsonString);
     });
 }
