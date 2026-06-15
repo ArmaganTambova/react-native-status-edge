@@ -1,7 +1,7 @@
 # react-native-status-edge
 
 > 🚧 **Development preview — not a production release.**
-> This is a work-in-progress (`v0.3.0`). APIs, behavior, and native geometry may
+> This is a work-in-progress (`v0.3.3`). APIs, behavior, and native geometry may
 > change without notice, and some platforms/devices are still being calibrated.
 > Use at your own risk. See [License](#license) — this is **proprietary**,
 > source-available software, not open source.
