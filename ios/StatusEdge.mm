@@ -6,9 +6,100 @@
 RCT_EXPORT_MODULE()
 
 - (NSString *)getDeviceModel {
+    // On the Simulator utsname.machine is "x86_64"/"arm64"; the real device
+    // identifier is exposed via this env var, so prefer it when present.
+    NSString *sim = [[NSProcessInfo processInfo] environment][@"SIMULATOR_MODEL_IDENTIFIER"];
+    if (sim.length > 0) {
+        return sim;
+    }
     struct utsname systemInfo;
     uname(&systemInfo);
     return [NSString stringWithCString:systemInfo.machine encoding:NSUTF8StringEncoding];
+}
+
+/**
+ * Cutout geometry per device identifier, in logical points.
+ *
+ * iOS exposes no runtime cutout-shape API, so the shape is mapped from the
+ * device model. Dimensions are well-supported approximations (Apple does not
+ * publish exact notch / Dynamic Island geometry). The resting Dynamic Island
+ * pill is ~125x37pt across every Island device; the wide first-gen notch
+ * (iPhone 11/12) is ~209pt, narrowed to ~162pt from the iPhone 13 onward
+ * (the iPhone 16e kept the notch rather than adopting the Island).
+ *
+ * Returns @{ "type": "Notch"|"Island"|"None", "w", "h", "top" }.
+ * Unknown / future devices fall back to the runtime top safe-area inset, which
+ * cleanly separates home-button (<=24pt), notch (~44-50pt) and Island (~59-68pt).
+ */
+- (NSDictionary *)cutoutInfoForModel:(NSString *)model safeTop:(CGFloat)safeTop {
+    static NSDictionary *table;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            // Home-button models — no cutout
+            @"iPhone12,8": @{ @"type": @"None" },                              // SE (2nd gen)
+            @"iPhone14,6": @{ @"type": @"None" },                              // SE (3rd gen)
+
+            // Original wide notch (iPhone X / XS / XS Max / XR) — same notch as 11/12
+            @"iPhone10,3": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // X
+            @"iPhone10,6": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // X (GSM)
+            @"iPhone11,2": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // XS
+            @"iPhone11,4": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // XS Max
+            @"iPhone11,6": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // XS Max
+            @"iPhone11,8": @{ @"type": @"Notch", @"w": @230, @"h": @30 },      // XR (LCD, 11 chassis)
+
+            // Wide first-generation notch (iPhone 11 / 12)
+            @"iPhone12,1": @{ @"type": @"Notch", @"w": @230, @"h": @30 },      // 11
+            @"iPhone12,3": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // 11 Pro
+            @"iPhone12,5": @{ @"type": @"Notch", @"w": @209, @"h": @30 },      // 11 Pro Max
+            @"iPhone13,1": @{ @"type": @"Notch", @"w": @209, @"h": @32 },      // 12 mini
+            @"iPhone13,2": @{ @"type": @"Notch", @"w": @209, @"h": @32 },      // 12
+            @"iPhone13,3": @{ @"type": @"Notch", @"w": @209, @"h": @32 },      // 12 Pro
+            @"iPhone13,4": @{ @"type": @"Notch", @"w": @209, @"h": @32 },      // 12 Pro Max
+
+            // Narrowed notch (iPhone 13 / 14 non-Pro / 16e)
+            @"iPhone14,4": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 13 mini
+            @"iPhone14,5": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 13
+            @"iPhone14,2": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 13 Pro
+            @"iPhone14,3": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 13 Pro Max
+            @"iPhone14,7": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 14
+            @"iPhone14,8": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 14 Plus
+            @"iPhone17,5": @{ @"type": @"Notch", @"w": @162, @"h": @33 },      // 16e
+
+            // Dynamic Island
+            @"iPhone15,2": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @11 },  // 14 Pro
+            @"iPhone15,3": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @11 },  // 14 Pro Max
+            @"iPhone15,4": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @11 },  // 15
+            @"iPhone15,5": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @11 },  // 15 Plus
+            @"iPhone16,1": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @11 },  // 15 Pro
+            @"iPhone16,2": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @11 },  // 15 Pro Max
+            @"iPhone17,3": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @11 },  // 16
+            @"iPhone17,4": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @11 },  // 16 Plus
+            @"iPhone17,1": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @12 },  // 16 Pro
+            @"iPhone17,2": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @12 },  // 16 Pro Max
+            @"iPhone18,3": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @12 },  // 17
+            @"iPhone18,1": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @12 },  // 17 Pro
+            @"iPhone18,2": @{ @"type": @"Island", @"w": @126, @"h": @37, @"top": @12 },  // 17 Pro Max
+            @"iPhone18,4": @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @13 },  // iPhone Air
+        };
+    });
+
+    NSDictionary *info = table[model];
+    if (info) {
+        return info;
+    }
+
+    // Unknown / future device — fall back to the runtime safe-area inset.
+    if (![model hasPrefix:@"iPhone"]) {
+        return @{ @"type": @"None" };           // iPad / iPod / unknown
+    }
+    if (safeTop <= 24.0) {
+        return @{ @"type": @"None" };           // home-button class
+    }
+    if (safeTop >= 55.0) {
+        return @{ @"type": @"Island", @"w": @125, @"h": @37, @"top": @12 };
+    }
+    return @{ @"type": @"Notch", @"w": @162, @"h": @33 };
 }
 
 - (void)getCutoutData:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
@@ -32,95 +123,35 @@ RCT_EXPORT_MODULE()
         }
 
         CGFloat safeTop = window.safeAreaInsets.top;
-        NSString *model = [self getDeviceModel];
-
-        NSString *type = @"None";
-        NSMutableArray *rects = [NSMutableArray array];
         CGFloat screenWidth = window.bounds.size.width;
-
-        // Logic: Support ONLY iPhone 11 and newer.
-        // iPhone 11 identifier starts with iPhone12,x (12,1 / 12,3 / 12,5)
-        // iPhone SE 2nd Gen is 12,8
-        // So major version must be >= 12.
-
-        if ([model hasPrefix:@"iPhone"]) {
-            NSArray *components = [model componentsSeparatedByString:@","];
-            NSString *majorStr = [components[0] stringByReplacingOccurrencesOfString:@"iPhone" withString:@""];
-            NSInteger major = [majorStr integerValue];
-
-            if (major < 12) {
-                // iPhone X, XS, XR, 8, etc. are not supported.
-                type = @"None";
-            } else {
-                // Major >= 12 (iPhone 11+)
-
-                // Check for SE models (Home button, no notch/island)
-                // iPhone SE 2nd Gen (12,8)
-                // iPhone SE 3rd Gen (14,6)
-                if ([model isEqualToString:@"iPhone12,8"] || [model isEqualToString:@"iPhone14,6"]) {
-                    type = @"None";
-                }
-                // iPhone 16e (iPhone17,5) has a notch, not a Dynamic Island.
-                else if ([model isEqualToString:@"iPhone17,5"]) {
-                    type = @"Notch";
-                }
-                // Check for Dynamic Island
-                // iPhone 14 Pro (15,2), 14 Pro Max (15,3)
-                // iPhone 15 series (15,x), 16 series (16,x)
-                // Major >= 15 generally means Island.
-                else if (major >= 15) {
-                    type = @"Island";
-                }
-                // Major 12, 13, 14 (except SE) -> Notch
-                // iPhone 11 (12,x)
-                // iPhone 12 (13,x)
-                // iPhone 13 (14,x)
-                // iPhone 14/14 Plus (14,7 / 14,8)
-                else {
-                    type = @"Notch";
-                }
-            }
-        } else {
-            // Simulator, iPad, iPod -> None
-            type = @"None";
+        if (screenWidth <= 0) {
+            screenWidth = [UIScreen mainScreen].bounds.size.width;
         }
 
-        // Populate dimensions based on type
-        if ([type isEqualToString:@"Island"]) {
-            // Dynamic Island dimensions (approximate)
-            // Width expands, but base pill is ~126x37
-            CGFloat width = 126;
-            CGFloat height = 37;
-            CGFloat x = (screenWidth - width) / 2;
-            CGFloat y = 11; // Approx status bar padding
+        NSString *model = [self getDeviceModel];
+        NSDictionary *info = [self cutoutInfoForModel:model safeTop:safeTop];
+        NSString *type = info[@"type"];
 
-            [rects addObject:@{
-                @"x": @(x),
-                @"y": @(y),
-                @"width": @(width),
-                @"height": @(height)
-            }];
-        } else if ([type isEqualToString:@"Notch"]) {
-            // Standard Notch dimensions
-            // Width ~209, Height ~30-34
-            CGFloat width = 209;
-            CGFloat height = 34; // Slightly taller than 30 for safety
-            CGFloat x = (screenWidth - width) / 2;
-            CGFloat y = 0; // Connected to top
-
-            [rects addObject:@{
-                @"x": @(x),
-                @"y": @(y),
-                @"width": @(width),
-                @"height": @(height)
-            }];
+        NSMutableArray *rects = [NSMutableArray array];
+        if ([type isEqualToString:@"Notch"]) {
+            CGFloat width  = [info[@"w"] doubleValue];
+            CGFloat height = [info[@"h"] doubleValue];
+            CGFloat x = (screenWidth - width) / 2.0;
+            [rects addObject:@{ @"x": @(x), @"y": @(0), @"width": @(width), @"height": @(height) }];
+        } else if ([type isEqualToString:@"Island"]) {
+            CGFloat width  = [info[@"w"] doubleValue];
+            CGFloat height = [info[@"h"] doubleValue];
+            CGFloat top    = info[@"top"] ? [info[@"top"] doubleValue] : 11.0;
+            CGFloat x = (screenWidth - width) / 2.0;
+            [rects addObject:@{ @"x": @(x), @"y": @(top), @"width": @(width), @"height": @(height) }];
         }
 
         NSDictionary *result = @{
-            @"cutoutType": type,
-            @"cutoutRects": rects,
-            @"cameraCircles": @[],
-            @"safeAreaTop": @(safeTop)
+            @"cutoutType":    type,
+            @"cutoutRects":   rects,
+            @"cameraCircles": @[],          // iOS has no runtime camera geometry
+            @"mainRectIndex": @0,
+            @"safeAreaTop":   @(safeTop)
         };
 
         NSError *error = nil;
