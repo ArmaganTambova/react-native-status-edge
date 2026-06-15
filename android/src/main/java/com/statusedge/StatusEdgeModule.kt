@@ -10,7 +10,6 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.UiThreadUtil
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -46,11 +45,13 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
         // multi-display and accessibility display-size scaling. Below API 34 we
         // fall back to the activity's display metrics (activity is a UiContext).
         @Suppress("DEPRECATION")
-        val density = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        val rawDensity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
           windowMetrics.density
         } else {
           activity.resources.displayMetrics.density
         }
+        // Guard against a 0 / NaN density yielding NaN coordinates (JSONException).
+        val density = if (rawDensity.isFinite() && rawDensity > 0f) rawDensity else 1f
 
         // WindowMetrics.getWindowInsets() (API 30+) does not require view attachment
         // and always reflects the current window state — preferred over
@@ -306,7 +307,7 @@ class StatusEdgeModule(reactContext: ReactApplicationContext) :
   }
 
   // ---------------------------------------------------------------------------
-  // Circle helpers
+  // Circle helper
   // ---------------------------------------------------------------------------
 
   /**
